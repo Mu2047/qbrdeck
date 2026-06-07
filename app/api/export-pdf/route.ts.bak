@@ -1,0 +1,49 @@
+import { auth } from '@clerk/nextjs/server'
+import { NextRequest, NextResponse } from 'next/server'
+import { prisma } from '@/lib/prisma'
+import { generatePDF } from '@/lib/export-pdf'
+
+export async function POST(req: NextRequest) {
+  try {
+    const { userId } = auth()
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    const user = await prisma.user.findUnique({ where: { clerkId: userId } })
+    if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+
+    const { qbrId } = await req.json()
+
+    const qbr = await prisma.qBR.findFirst({
+      where: { id: qbrId },
+      include: { client: true },
+    })
+
+    if (!qbr || qbr.client.userId !== user.id) {
+      return NextResponse.json({ error: 'QBR not found' }, { status: 404 })
+    }
+
+    if (!qbr.slides) {
+      return NextResponse.json({ error: 'QBR has no generated slides' }, { status: 400 })
+    }
+
+    const buffer = await generatePDF(
+      qbr.slides as any,
+      qbr.client.name,
+      qbr.quarter,
+      qbr.year,
+      user.companyName ?? 'MI Secure Tech Solutions'
+    )
+
+    await prisma.qBR.update({ where: { id: qbrId }, data: { status: 'EXPORTED' } })
+
+    return new NextResponse(buffer, {
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="${qbr.client.name}-QBR-Q${qbr.quarter}-${qbr.year}.pdf"`,
+      },
+    })
+  } catch (err: any) {
+    console.error('[export-pdf]', err)
+    return NextResponse.json({ error: err.message ?? 'Export failed' }, { status: 500 })
+  }
+}

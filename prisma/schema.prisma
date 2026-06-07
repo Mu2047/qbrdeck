@@ -1,0 +1,215 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Plan {
+  FREE
+  SOLO
+  GROWTH
+  AGENCY
+}
+
+enum TeamRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum QBRStatus {
+  DRAFT
+  GENERATED
+  EXPORTED
+}
+
+enum BrandingMode {
+  PLATFORM_BRANDED
+  WHITE_LABEL
+}
+
+enum ExportType {
+  PDF
+  PPTX
+}
+
+model Workspace {
+  id           String            @id @default(cuid())
+  name         String
+  slug         String?           @unique
+  logoUrl      String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  clients      Client[]
+  exportEvents ExportEvent[]     @relation("WorkspaceExports")
+  subscription Subscription?
+  invites      WorkspaceInvite[]
+  members      WorkspaceMember[]
+}
+
+model User {
+  id             String            @id @default(cuid())
+  clerkId        String            @unique
+  email          String            @unique
+  name           String?
+  avatarUrl      String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  clientsCreated Client[]          @relation("ClientCreatedBy")
+  exportEvents   ExportEvent[]     @relation("UserExports")
+  qbrsCreated    QBR[]             @relation("CreatedBy")
+  qbrsExported   QBR[]             @relation("ExportedBy")
+  invitesSent    WorkspaceInvite[] @relation("InvitedBy")
+  memberships    WorkspaceMember[]
+}
+
+model WorkspaceMember {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        TeamRole  @default(MEMBER)
+  joinedAt    DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model WorkspaceInvite {
+  id          String       @id @default(cuid())
+  workspaceId String
+  email       String
+  role        TeamRole     @default(MEMBER)
+  token       String       @unique @default(cuid())
+  status      InviteStatus @default(PENDING)
+  invitedById String
+  createdAt   DateTime     @default(now())
+  expiresAt   DateTime
+  invitedBy   User         @relation("InvitedBy", fields: [invitedById], references: [id])
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, email])
+  @@index([token])
+}
+
+model Subscription {
+  id                   String    @id @default(cuid())
+  workspaceId          String    @unique
+  workspace            Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  stripeCustomerId     String    @unique
+  stripeSubscriptionId String?   @unique
+  stripePriceId        String?
+  plan                 Plan      @default(FREE)
+  status               String    @default("active")
+  currentPeriodEnd     DateTime?
+  periodStart          DateTime  @default(now())
+  qbrCount             Int       @default(0)
+  exportCount          Int       @default(0)
+  exportedQbrIds       String    @default("[]")
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+}
+
+model Client {
+  id           String        @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdById  String
+  createdBy    User          @relation("ClientCreatedBy", fields: [createdById], references: [id])
+  name         String
+  industry     String?
+  contactName  String?
+  contactEmail String?
+  userCount    Int?
+  notes        String?
+  nextQbrDate  DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  qbrs         QBR[]
+  exportEvents ExportEvent[] @relation("ClientExports")
+
+  @@index([workspaceId])
+}
+
+model QBR {
+  id                    String        @id @default(cuid())
+  clientId              String
+  client                Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  createdById           String?
+  createdBy             User?         @relation("CreatedBy", fields: [createdById], references: [id])
+  exportedById          String?
+  exportedBy            User?         @relation("ExportedBy", fields: [exportedById], references: [id])
+  quarter               String
+  year                  Int
+  status                QBRStatus     @default(DRAFT)
+  tickets               Int?
+  avgResolutionHrs      Float?
+  uptimePct             Float?
+  patchCompliancePct    Float?
+  securityIncidents     Int?
+  usersSupported        Int?
+  ticketCategories      String?
+  wins                  String?
+  upsellOpportunities   String?
+  slides                Json?
+  summary               String?
+  shareToken            String?       @unique
+  rawMetrics            Json?
+  healthScore           Int?
+  healthStatus          String?
+  healthScoreVersion    String?
+  scoreBreakdown        Json?
+  snapshot              Json?
+  generatorVersion      String?
+  exportTemplateVersion String?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  exportEvents          ExportEvent[] @relation("QBRExports")
+
+  @@index([clientId])
+}
+
+/// This model contains row level security and requires additional setup for migrations.
+model ExportEvent {
+  id                         String       @id
+  qbrId                      String
+  qbr                        QBR          @relation("QBRExports", fields: [qbrId], references: [id], onDelete: Cascade)
+  workspaceId                String
+  workspace                  Workspace    @relation("WorkspaceExports", fields: [workspaceId], references: [id], onDelete: Cascade)
+  clientId                   String
+  client                     Client       @relation("ClientExports", fields: [clientId], references: [id], onDelete: Cascade)
+  exportedByUserId           String?
+  exportedBy                 User?        @relation("UserExports", fields: [exportedByUserId], references: [id])
+  exportType                 ExportType
+  exportedAt                 DateTime     @default(now())
+  exportPackageId            String?
+  isRedownload               Boolean      @default(false)
+  consumedExportCredit       Boolean      @default(false)
+  brandingMode               BrandingMode
+  planAtExport               Plan
+  clientNameAtExport         String
+  mspNameAtExport            String?
+  healthScoreAtExport        Int?
+  healthStatusAtExport       String?
+  healthScoreVersionAtExport String?
+  templateVersion            String?
+
+  @@index([qbrId])
+  @@index([workspaceId])
+  @@index([clientId])
+  @@index([exportPackageId])
+  @@index([exportedAt])
+}
