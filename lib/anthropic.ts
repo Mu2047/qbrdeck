@@ -44,76 +44,21 @@ export interface QBRSlide {
   }>
 }
 
-// ── Health score computation ─────────────────────────────────────────────────
-export function computeHealthScore(input: QBRInput): { score: number; status: string; summary: string } {
-  let score = 100
-  const issues: string[] = []
+// ── REMOVED: computeHealthScore ───────────────────────────────────────────────
+// This function has been removed from lib/anthropic.ts.
+// The single source of truth is lib/health-score.ts → computeHealthScore().
+// The generator receives pre-computed score values and writes them as
+// {{healthScore}} and {{healthStatus}} placeholders — never hardcoded numbers.
+// Export routes resolve placeholders from the stored QBR record at render time.
+// This ensures DB, PDF, PPTX, preview, and ExportEvent always agree.
+// ─────────────────────────────────────────────────────────────────────────────
 
-  // Uptime (max deduction: 25) — unchanged
-  if (input.uptimePct !== undefined) {
-    if (input.uptimePct >= 99.9) score -= 0
-    else if (input.uptimePct >= 99.5) { score -= 5 }
-    else if (input.uptimePct >= 99.0) { score -= 10; issues.push('uptime below 99.9%') }
-    else if (input.uptimePct >= 98.0) { score -= 18; issues.push('uptime needs attention') }
-    else { score -= 25; issues.push('critical uptime issues') }
-  }
-
-  // Patch compliance (max deduction: 25) — unchanged
-  if (input.patchCompliancePct !== undefined) {
-    if (input.patchCompliancePct >= 98) score -= 0
-    else if (input.patchCompliancePct >= 95) { score -= 5 }
-    else if (input.patchCompliancePct >= 90) { score -= 10; issues.push('patch compliance below 95%') }
-    else if (input.patchCompliancePct >= 85) { score -= 18; issues.push('patch compliance needs improvement') }
-    else { score -= 25; issues.push('critical patch compliance gap') }
-  }
-
-  // Security incidents (max deduction: 25) — UPDATED
-  // 3 contained incidents ≠ 5 uncontained ones. Tier shift reduces overpenalization.
-  if (input.securityIncidents !== undefined) {
-    if (input.securityIncidents === 0) score -= 0
-    else if (input.securityIncidents <= 3) { score -= 8; issues.push('security incidents require monitoring') }
-    else if (input.securityIncidents <= 6) { score -= 15; issues.push('elevated security incidents') }
-    else { score -= 25; issues.push('high security incident count') }
-  }
-
-  // Avg resolution time (max deduction: 15) — UPDATED
-  // MSP industry standard is ≤8 hrs for normal tickets. 4.6 hrs is strong, not mediocre.
-  if (input.avgResolutionHrs !== undefined) {
-    if (input.avgResolutionHrs <= 4) score -= 0
-    else if (input.avgResolutionHrs <= 8) { score -= 3 }
-    else if (input.avgResolutionHrs <= 16) { score -= 8; issues.push('resolution time above target') }
-    else { score -= 15; issues.push('slow ticket resolution') }
-  }
-
-  // Tickets per user (max deduction: 10) — unchanged
-  if (input.tickets !== undefined && input.usersSupported) {
-    const ratio = input.tickets / input.usersSupported
-    if (ratio <= 1.5) score -= 0
-    else if (ratio <= 2.5) { score -= 3 }
-    else if (ratio <= 4) { score -= 6; issues.push('high ticket volume per user') }
-    else { score -= 10; issues.push('very high ticket volume') }
-  }
-
-  score = Math.max(0, Math.min(100, score))
-
-  // UPDATED status labels — reflect business reality, not just raw deductions
-  const status =
-    score >= 90 ? 'Excellent' :
-    score >= 80 ? 'Strong' :
-    score >= 70 ? 'Stable with Improvement Needed' :
-    score >= 60 ? 'Needs Attention' :
-    'High Risk'
-
-  const summary =
-    issues.length === 0
-      ? 'Strong overall performance across all measured areas.'
-      : `Strong overall performance with improvement needed in: ${issues.join(', ')}.`
-
-  return { score, status, summary }
-}
-
-export async function generateQBRSlides(input: QBRInput): Promise<QBRSlide[]> {
-  const health = computeHealthScore(input)
+export async function generateQBRSlides(
+  input: QBRInput,
+  healthScore: number,
+  healthStatus: string,
+  healthSummary: string,
+): Promise<QBRSlide[]> {
 
   const prompt = `You are an expert MSP business consultant writing a Quarterly Business Review for a client.
 Write in clear, executive-friendly language. No technical jargon. Be specific, positive, and forward-looking.
@@ -133,17 +78,32 @@ Metrics this quarter:
 - Top ticket categories: ${input.ticketCategories ?? 'Not specified'}
 - Notable wins & projects: ${input.wins ?? 'None specified'}
 - Upsell/risk opportunities: ${input.upsellOpportunities ?? 'None specified'}
-- Technology Health Score: ${health.score}/100 (${health.status})
+- Technology Health Score: {{healthScore}}/100 ({{healthStatus}})
+- Health summary: ${healthSummary}
+
+CRITICAL INSTRUCTION — SCORE PLACEHOLDERS:
+You MUST write {{healthScore}} and {{healthStatus}} wherever you reference the Technology Health Score.
+NEVER write the actual number (e.g. do not write "60" or "42" or "High Risk" as a literal string).
+The placeholders will be replaced with the correct values at export time.
+Example correct usage: "Your Technology Health Score of {{healthScore}}/100 ({{healthStatus}}) indicates..."
+Example wrong usage: "Your Technology Health Score of 60/100 (Needs Attention) indicates..."
 
 Generate exactly 7 slides as a JSON array. Return ONLY valid JSON, nothing else.
 
 Slide requirements:
 
-1. "executive_summary" — 2-3 sentence overview. "bullets" array of 3 key highlights.
+1. "executive_summary" — 2-3 sentence overview referencing {{healthScore}} and {{healthStatus}}. "bullets" array of 3 key highlights.
 
 2. "business_impact" — Translate IT metrics into business value. 2 sentence intro focused on business outcomes, not technical numbers. "bullets" array of 4 items covering: productivity protected, downtime minimized, security posture, support responsiveness. Frame everything from the client's business perspective.
 
 3. "metrics" — One sentence summary. "metrics" array of 6 items each with label, value (formatted nicely), status ("good"|"caution"|"risk"), and interpretation (one short sentence explaining what the number means for the business).
+The 6th metric must always be:
+{
+  "label": "Technology Health Score",
+  "value": "{{healthScore}}/100",
+  "status": <"good" if healthStatus is Excellent or Strong, "caution" if Stable or Needs Attention, "risk" if High Risk>,
+  "interpretation": "{{healthStatus}} — your overall technology environment health this quarter."
+}
 
 4. "wins" — Celebrate achievements. 2 sentence intro + "bullets" array of 3-4 specific wins derived from the metrics.
 
@@ -151,13 +111,13 @@ Slide requirements:
 
 6. "roadmap" — Title this slide "Q${Number(input.quarter) === 4 ? 1 : Number(input.quarter) + 1} ${Number(input.quarter) === 4 ? input.year + 1 : input.year} Strategic Roadmap". Include a "priorities" object containing three arrays:
    - "critical": 1-2 must-do items
-   - "important": 1-2 should-do items  
+   - "important": 1-2 should-do items
    - "strategic": 1-2 forward-looking items
 
 7. "recommendations" — Final recommendations. 2 sentence intro. "recommendations" array of 3 items, each with:
    - title: short name
    - why: one sentence explaining why it matters
-   - risk: one sentence on business risk if ignored. Use general language only — no invented dollar amounts (e.g. "$50,000-$200,000"), no invented percentages (e.g. "70-80% reduction", "60% fewer incidents"). Say things like "can lead to significant recovery costs and downtime" or "may result in permanent data loss".
+   - risk: one sentence on business risk if ignored. Use general language only — no invented dollar amounts, no invented percentages. Say things like "can lead to significant recovery costs and downtime" or "may result in permanent data loss".
    - benefit: one sentence on expected benefit. Use language like "can materially reduce risk", "significantly strengthens your security posture", "provides reliable recovery options" — never invented statistics.
 
 JSON format:

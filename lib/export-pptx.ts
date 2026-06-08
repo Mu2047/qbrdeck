@@ -1,6 +1,6 @@
 import pptxgen from 'pptxgenjs'
 import type { QBRSlide, QBRInput } from '@/lib/anthropic'
-import { computeHealthScore } from '@/lib/anthropic'
+import { computeHealthScore } from '@/lib/health-score'
 
 const NAVY  = '0a1634'
 const GOLD  = 'c9a02a'

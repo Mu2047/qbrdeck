@@ -2,7 +2,7 @@ import { Document, Page, Text, View, StyleSheet, pdf, Image, Font } from '@react
 Font.registerHyphenationCallback(word => [word])
 import React from 'react'
 import type { QBRSlide, QBRInput } from '@/lib/anthropic'
-import { computeHealthScore } from '@/lib/anthropic'
+import { computeHealthScore } from '@/lib/health-score'
 
 const NAVY = '#0a1634'
 const GOLD = '#c9a02a'
@@ -110,7 +110,7 @@ function Footer({ mspName, clientName, quarter, year, pageNum, isWhiteLabel }: {
 
 function CoverPage({ clientName, quarter, year, mspName, logoUrl, health, isWhiteLabel }: {
   clientName: string; quarter: string; year: number; mspName: string; logoUrl?: string
-  health: { score: number; status: string; summary: string }; isWhiteLabel?: boolean
+  health: { score: number; status: string; summary?: string }; isWhiteLabel?: boolean
 }) {
   const scoreColor = health.score >= 90 ? '#16A34A' : health.score >= 70 ? '#D97706' : '#DC2626'
   return (
@@ -127,7 +127,7 @@ function CoverPage({ clientName, quarter, year, mspName, logoUrl, health, isWhit
             <Text style={{ color: '#FFFFFF', fontSize: 28, fontFamily: 'Helvetica-Bold' }}>{health.score}<Text style={{ fontSize: 14, color: '#9CA3AF' }}>/100</Text></Text>
             <Text style={{ color: scoreColor, fontSize: 9, fontFamily: 'Helvetica-Bold' }}>{sanitize(health.status)}</Text>
           </View>
-          <Text style={{ color: '#9CA3AF', fontSize: 10, flex: 1, lineHeight: 1.5 }}>{sanitize(health.summary)}</Text>
+          <Text style={{ color: '#9CA3AF', fontSize: 10, flex: 1, lineHeight: 1.5 }}>{sanitize(health.summary ?? '')}</Text>
         </View>
         <Text style={styles.coverPrepared}>{isWhiteLabel ? `Prepared by ${sanitize(mspName)}` : 'Prepared with QBR Deck'}</Text>
         <Text style={styles.coverConfidential}>CONFIDENTIAL | FOR {sanitize(clientName.toUpperCase())} USE ONLY</Text>
