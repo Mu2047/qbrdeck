@@ -79,7 +79,7 @@ function SimpleBarChart({ data, valueKey, color = 'bg-navy-600', label = '' }: {
     <div className="flex items-end gap-2 h-20 pt-2">
       {data.map((d, i) => {
         const val = Number(d[valueKey]) || 0
-        const hPct = Math.max((val / max) * 100, val > 0 ? 8 : 0)
+        const hPct = Math.max((val / max) * 70, val > 0 ? 8 : 0)
         return (
           <div key={i} className="flex-1 flex flex-col items-center gap-1 group relative">
             {/* Tooltip */}
@@ -90,7 +90,7 @@ function SimpleBarChart({ data, valueKey, color = 'bg-navy-600', label = '' }: {
             {val > 0 && (
               <span className="text-[10px] font-semibold text-navy-700 mb-0.5">{val}</span>
             )}
-            <div className="w-full flex flex-col justify-end" style={{ height: '56px' }}>
+            <div className="w-full flex flex-col justify-end" style={{ height: '64px' }}>
               <div
                 className={`w-full rounded-t ${color} hover:opacity-80 transition-opacity`}
                 style={{ height: `${hPct}%`, minHeight: val > 0 ? '6px' : '0' }}
