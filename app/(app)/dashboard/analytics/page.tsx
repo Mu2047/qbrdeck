@@ -76,7 +76,7 @@ function SimpleBarChart({ data, valueKey, color = 'bg-navy-600', label = '' }: {
   }
 
   return (
-    <div className="flex items-end gap-2 h-20 pt-2">
+    <div className={`flex items-end gap-2 h-20 pt-2 ${data.length === 1 ? 'px-24' : ''}`}>
       {data.map((d, i) => {
         const val = Number(d[valueKey]) || 0
         const hPct = Math.max((val / max) * 70, val > 0 ? 8 : 0)
