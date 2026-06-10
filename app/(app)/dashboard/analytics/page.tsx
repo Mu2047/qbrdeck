@@ -39,7 +39,7 @@ interface AnalyticsData {
 
 function formatMonth(m: string) {
   const [y, mo] = m.split('-')
-  return new Date(Number(y), Number(mo) - 1).toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
+  return new Date(Number(y), Number(mo) - 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
 }
 
 function statusColor(status: string | null) {
@@ -76,7 +76,7 @@ function SimpleBarChart({ data, valueKey, color = 'bg-navy-600', label = '' }: {
   }
 
   return (
-    <div className="flex items-end gap-2 h-28 pt-2">
+    <div className="flex items-end gap-2 h-20 pt-2">
       {data.map((d, i) => {
         const val = Number(d[valueKey]) || 0
         const hPct = Math.max((val / max) * 100, val > 0 ? 8 : 0)
@@ -90,7 +90,7 @@ function SimpleBarChart({ data, valueKey, color = 'bg-navy-600', label = '' }: {
             {val > 0 && (
               <span className="text-[10px] font-semibold text-navy-700 mb-0.5">{val}</span>
             )}
-            <div className="w-full flex flex-col justify-end" style={{ height: '80px' }}>
+            <div className="w-full flex flex-col justify-end" style={{ height: '56px' }}>
               <div
                 className={`w-full rounded-t ${color} hover:opacity-80 transition-opacity`}
                 style={{ height: `${hPct}%`, minHeight: val > 0 ? '6px' : '0' }}
@@ -130,7 +130,7 @@ function ExportDonut({ pdf, pptx }: { pdf: number; pptx: number }) {
           strokeLinecap="round"
           transform={`rotate(-90 ${cx} ${cy})`} />
         <text x={cx} y={cy - 4} textAnchor="middle" fontSize="13" fontWeight="700" fill="#1e3a5f">{total}</text>
-        <text x={cx} y={cy + 10} textAnchor="middle" fontSize="8" fill="#9ca3af">files</text>
+        <text x={cx} y={cy + 10} textAnchor="middle" fontSize="8" fill="#9ca3af">downloads</text>
       </svg>
       <div className="space-y-2 text-sm">
         <div className="flex items-center gap-2">
