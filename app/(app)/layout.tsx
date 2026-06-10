@@ -3,13 +3,14 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { UserButton } from '@clerk/nextjs'
-import { LayoutDashboard, Users, Settings, CreditCard, FileText } from 'lucide-react'
+import { LayoutDashboard, Users, Settings, CreditCard, FileText, BarChart2 } from 'lucide-react'
 
 const NAV = [
-  { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-  { href: '/dashboard/clients', icon: Users, label: 'Clients' },
-  { href: '/dashboard/billing', icon: CreditCard, label: 'Billing' },
-  { href: '/dashboard/settings', icon: Settings, label: 'Settings' },
+  { href: '/dashboard',           icon: LayoutDashboard, label: 'Dashboard' },
+  { href: '/dashboard/clients',   icon: Users,           label: 'Clients'   },
+  { href: '/dashboard/analytics', icon: BarChart2,       label: 'Analytics' },
+  { href: '/dashboard/billing',   icon: CreditCard,      label: 'Billing'   },
+  { href: '/dashboard/settings',  icon: Settings,        label: 'Settings'  },
 ]
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
