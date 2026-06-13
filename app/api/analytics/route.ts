@@ -1,8 +1,56 @@
+
 import { auth } from '@clerk/nextjs/server'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceMembership } from '@/lib/workspace'
 import { getLimits, UPGRADE_MESSAGES } from '@/lib/limits'
+
+// ── Shared helpers ─────────────────────────────────────────────────────────────
+
+// Basic plans: reads from Subscription.exportCount — billing-period scoped,
+// resets with billing period, counts only consumedExportCredit=true packages.
+// Does NOT change with the Analytics date-range filter.
+async function getCurrentExportPackageUsage(workspaceId: string): Promise<number> {
+  const sub = await prisma.subscription.findUnique({
+    where:  { workspaceId },
+    select: { exportCount: true },
+  })
+  return sub?.exportCount ?? 0
+}
+
+// Full plans: reads from ExportEvent within selected date range.
+// Responds to client and date filters.
+async function getExportAnalytics(
+  workspaceId: string,
+  clientId:    string,
+  rangeStart:  Date,
+) {
+  const where: any = { workspaceId, exportedAt: { gte: rangeStart } }
+  if (clientId !== 'all') where.clientId = clientId
+
+  const events = await prisma.exportEvent.findMany({
+    where,
+    select: { exportType: true, exportedAt: true, consumedExportCredit: true, exportPackageId: true },
+    orderBy: { exportedAt: 'asc' },
+  })
+
+  const byMonth: Record<string, { PDF: number; PPTX: number }> = {}
+  for (const ev of events) {
+    const key = ev.exportedAt.toISOString().slice(0, 7)
+    if (!byMonth[key]) byMonth[key] = { PDF: 0, PPTX: 0 }
+    byMonth[key][ev.exportType]++
+  }
+
+  return {
+    exportActivity: Object.entries(byMonth).map(([month, counts]) => ({ month, ...counts })),
+    totalPDF:       events.filter(e => e.exportType === 'PDF').length,
+    totalPPTX:      events.filter(e => e.exportType === 'PPTX').length,
+    totalPackages:  events.filter(e => e.consumedExportCredit).length,
+    totalDownloads: events.length,
+  }
+}
+
+// ── Main route ────────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
   try {
@@ -12,9 +60,9 @@ export async function GET(req: NextRequest) {
     const membership = await getWorkspaceMembership(clerkId)
     if (!membership) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
 
-    const workspaceId = membership.workspaceId
-    const plan        = membership.subscription?.plan ?? 'FREE'
-    const limits      = getLimits(plan)
+    const workspaceId     = membership.workspaceId
+    const plan            = membership.subscription?.plan ?? 'FREE'
+    const limits          = getLimits(plan)
     const isFullAnalytics = limits.analytics === 'full'
 
     // ── Date range filter — full analytics only ───────────────────────────────
@@ -55,8 +103,8 @@ export async function GET(req: NextRequest) {
         id: true, createdAt: true, clientId: true,
         healthScore: true, healthStatus: true,
         quarter: true, year: true,
-        rawMetrics:    isFullAnalytics ? true : false,
-        scoreBreakdown: isFullAnalytics ? true : false,
+        rawMetrics:     isFullAnalytics,
+        scoreBreakdown: isFullAnalytics,
         client: { select: { name: true } },
       },
       orderBy: { createdAt: 'asc' },
@@ -74,7 +122,6 @@ export async function GET(req: NextRequest) {
     const avgHealthScore = scoredQbrs.length > 0
       ? Math.round(scoredQbrs.reduce((sum, q) => sum + (q.healthScore ?? 0), 0) / scoredQbrs.length)
       : null
-
     const avgHealthStatus = avgHealthScore === null ? null
       : avgHealthScore >= 90 ? 'Excellent'
       : avgHealthScore >= 80 ? 'Strong'
@@ -103,9 +150,37 @@ export async function GET(req: NextRequest) {
     const coveragePct      = totalClients > 0 ? Math.round((coveredClients / totalClients) * 100) : 0
     const uncoveredClients = coverageClients.filter(c => c.qbrs.length === 0).map(c => c.name)
 
-    // ── 4. Health score trends — full analytics only ──────────────────────────
-    let healthTrends: any[] = []
+    // ── 4. Export packages ────────────────────────────────────────────────────
+    // Basic (Free/Solo): billing-period count from Subscription record.
+    //   — Does NOT respond to date-range filter (intentional).
+    //   — Same source as Billing page — canonical, consistent.
+    // Full (Growth/Agency): date-range filtered from ExportEvent records.
+    //   — Responds to client and date filters.
 
+    let totalPackages  = 0
+    let totalDownloads = 0
+    let totalPDF       = 0
+    let totalPPTX      = 0
+    let exportActivity: { month: string; PDF: number; PPTX: number }[] = []
+    let exportIsBillingPeriod = false  // tells frontend how to label the KPI
+
+    if (isFullAnalytics) {
+      const exportData = await getExportAnalytics(workspaceId, clientId, rangeStart)
+      exportActivity  = exportData.exportActivity
+      totalPDF        = exportData.totalPDF
+      totalPPTX       = exportData.totalPPTX
+      totalPackages   = exportData.totalPackages
+      totalDownloads  = exportData.totalDownloads
+      exportIsBillingPeriod = false
+    } else {
+      // Basic plan: read from Subscription.exportCount — billing period scoped
+      totalPackages         = await getCurrentExportPackageUsage(workspaceId)
+      exportIsBillingPeriod = true
+      // totalDownloads, totalPDF, totalPPTX remain 0 — not exposed on basic plans
+    }
+
+    // ── 5. Health score trends — full analytics only ──────────────────────────
+    let healthTrends: any[] = []
     if (isFullAnalytics) {
       const trendKey    = (q: typeof qbrs[0]) => `${q.clientId}__${q.quarter}__${q.year}`
       const trendLatest: Record<string, typeof qbrs[0]> = {}
@@ -149,39 +224,8 @@ export async function GET(req: NextRequest) {
       }))
     }
 
-    // ── 5. Export activity — full analytics only ──────────────────────────────
-    let exportActivity: any[] = []
-    let totalPDF      = 0
-    let totalPPTX     = 0
-    let totalPackages = 0
-    let totalDownloads = 0
-
-    if (isFullAnalytics) {
-      const exportWhere: any = { workspaceId, exportedAt: { gte: rangeStart } }
-      if (clientId !== 'all') exportWhere.clientId = clientId
-
-      const exportEvents = await prisma.exportEvent.findMany({
-        where:   exportWhere,
-        select:  { exportType: true, exportedAt: true, consumedExportCredit: true, exportPackageId: true },
-        orderBy: { exportedAt: 'asc' },
-      })
-
-      const exportByMonth: Record<string, { PDF: number; PPTX: number }> = {}
-      for (const ev of exportEvents) {
-        const key = ev.exportedAt.toISOString().slice(0, 7)
-        if (!exportByMonth[key]) exportByMonth[key] = { PDF: 0, PPTX: 0 }
-        exportByMonth[key][ev.exportType]++
-      }
-      exportActivity = Object.entries(exportByMonth).map(([month, counts]) => ({ month, ...counts }))
-      totalPDF       = exportEvents.filter(e => e.exportType === 'PDF').length
-      totalPPTX      = exportEvents.filter(e => e.exportType === 'PPTX').length
-      totalPackages  = exportEvents.filter(e => e.consumedExportCredit).length
-      totalDownloads = exportEvents.length
-    }
-
     // ── 6. Top risk flags — full analytics only ───────────────────────────────
     let topRiskFlags: { flag: string; count: number }[] = []
-
     if (isFullAnalytics) {
       const riskCounts: Record<string, number> = {}
       for (const qbr of qbrs) {
@@ -194,10 +238,10 @@ export async function GET(req: NextRequest) {
         }
         const metrics = (qbr as any).rawMetrics as Record<string, unknown> | null
         if (!metrics) continue
-        if (typeof metrics.uptimePct          === 'number' && metrics.uptimePct < 98)           riskCounts['Infrastructure Uptime']   = (riskCounts['Infrastructure Uptime']   ?? 0) + 1
-        if (typeof metrics.securityIncidents  === 'number' && metrics.securityIncidents > 1)    riskCounts['Security Incidents']      = (riskCounts['Security Incidents']      ?? 0) + 1
-        if (typeof metrics.patchCompliancePct === 'number' && metrics.patchCompliancePct < 95)  riskCounts['Patch Compliance']        = (riskCounts['Patch Compliance']        ?? 0) + 1
-        if (typeof metrics.avgResolutionHrs   === 'number' && metrics.avgResolutionHrs > 8)     riskCounts['Average Resolution Time'] = (riskCounts['Average Resolution Time'] ?? 0) + 1
+        if (typeof metrics.uptimePct          === 'number' && metrics.uptimePct < 98)          riskCounts['Infrastructure Uptime']   = (riskCounts['Infrastructure Uptime']   ?? 0) + 1
+        if (typeof metrics.securityIncidents  === 'number' && metrics.securityIncidents > 1)   riskCounts['Security Incidents']      = (riskCounts['Security Incidents']      ?? 0) + 1
+        if (typeof metrics.patchCompliancePct === 'number' && metrics.patchCompliancePct < 95) riskCounts['Patch Compliance']        = (riskCounts['Patch Compliance']        ?? 0) + 1
+        if (typeof metrics.avgResolutionHrs   === 'number' && metrics.avgResolutionHrs > 8)    riskCounts['Average Resolution Time'] = (riskCounts['Average Resolution Time'] ?? 0) + 1
       }
       topRiskFlags = Object.entries(riskCounts)
         .sort((a, b) => b[1] - a[1])
@@ -206,7 +250,6 @@ export async function GET(req: NextRequest) {
 
     // ── 7. High-risk clients — full analytics only ────────────────────────────
     let highRiskClients: any[] = []
-
     if (isFullAnalytics) {
       const latestPerClient: Record<string, typeof qbrs[0]> = {}
       for (const qbr of qbrs) {
@@ -231,7 +274,6 @@ export async function GET(req: NextRequest) {
     const totalQBRs = await prisma.qBR.count({ where: { client: { workspaceId } } })
 
     return NextResponse.json({
-      // Plan context — frontend uses this to know what to render
       analyticsAccess: limits.analytics,
       upgradeMessage:  isFullAnalytics ? null : UPGRADE_MESSAGES.analyticsLocked,
 
@@ -245,16 +287,15 @@ export async function GET(req: NextRequest) {
         uncoveredClients,
         avgHealthScore,
         avgHealthStatus,
+        // Tells frontend whether export KPI is billing-period scoped or date-range filtered
+        exportIsBillingPeriod,
       },
 
-      // Basic + full
-      clients:     allClients,
+      clients:      allClients,
       qbrActivity,
-
-      // Full analytics only (empty arrays for basic plans)
       healthTrends,
       exportActivity,
-      exportTotals:    { PDF: totalPDF, PPTX: totalPPTX, packages: totalPackages, downloads: totalDownloads },
+      exportTotals: { PDF: totalPDF, PPTX: totalPPTX, packages: totalPackages, downloads: totalDownloads },
       topRiskFlags,
       highRiskClients,
     })
@@ -264,5 +305,4 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: err.message ?? 'Failed to load analytics' }, { status: 500 })
   }
 }
-
 

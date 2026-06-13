@@ -12,18 +12,19 @@ import Link from 'next/link'
 interface Client { id: string; name: string }
 
 interface AnalyticsData {
-  analyticsAccess:  'basic' | 'full'
-  upgradeMessage:   string | null
+  analyticsAccess: 'basic' | 'full'
+  upgradeMessage:  string | null
   summary: {
-    totalClients:     number
-    totalQBRs:        number
-    totalPackages:    number
-    totalDownloads:   number
-    coveragePct:      number
-    coveredClients:   number
-    uncoveredClients: string[]
-    avgHealthScore:   number | null
-    avgHealthStatus:  string | null
+    totalClients:          number
+    totalQBRs:             number
+    totalPackages:         number
+    totalDownloads:        number
+    coveragePct:           number
+    coveredClients:        number
+    uncoveredClients:      string[]
+    avgHealthScore:        number | null
+    avgHealthStatus:       string | null
+    exportIsBillingPeriod: boolean
   }
   clients:       Client[]
   qbrActivity:   { month: string; count: number }[]
@@ -31,9 +32,9 @@ interface AnalyticsData {
     clientName: string
     points: { label: string; score: number; status: string; generatedDate: string; duplicateCount: number }[]
   }[]
-  exportActivity: { month: string; PDF: number; PPTX: number }[]
-  exportTotals:   { PDF: number; PPTX: number; packages: number; downloads: number }
-  topRiskFlags:   { flag: string; count: number }[]
+  exportActivity:  { month: string; PDF: number; PPTX: number }[]
+  exportTotals:    { PDF: number; PPTX: number; packages: number; downloads: number }
+  topRiskFlags:    { flag: string; count: number }[]
   highRiskClients: { clientName: string; healthScore: number | null; healthStatus: string | null; lastQBR: string }[]
 }
 
@@ -62,11 +63,11 @@ function scoreBarColor(score: number) {
   return score >= 80 ? 'bg-green-500' : score >= 60 ? 'bg-amber-500' : 'bg-red-500'
 }
 
-// ── Locked widget placeholder ─────────────────────────────────────────────────
+// ── Locked widget ─────────────────────────────────────────────────────────────
 
 function LockedWidget({ title, icon: Icon }: { title: string; icon: React.ElementType }) {
   return (
-    <div className="card p-5 relative overflow-hidden">
+    <div className="card p-5">
       <div className="flex items-center gap-2 mb-4">
         <Icon size={14} className="text-gray-300" />
         <h2 className="font-semibold text-gray-300 text-sm">{title}</h2>
@@ -235,6 +236,14 @@ export default function AnalyticsPage() {
   const isFullAnalytics = analyticsAccess === 'full'
   const isEmpty = summary.totalQBRs === 0 && qbrActivity.length === 0
 
+  // Export KPI label and helper text — different for basic vs full
+  const exportKpiLabel = summary.exportIsBillingPeriod
+    ? 'Export packages this month'
+    : 'Export packages'
+  const exportKpiSub = summary.exportIsBillingPeriod
+    ? 'Current billing period'
+    : `${summary.totalDownloads} file downloads`
+
   return (
     <div className="p-8">
 
@@ -266,7 +275,7 @@ export default function AnalyticsPage() {
         )}
       </div>
 
-      {/* ── Upgrade banner for basic plans ────────────────────────────────────── */}
+      {/* ── Upgrade banner — basic plans ──────────────────────────────────────── */}
       {!isFullAnalytics && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 px-5 py-4 mb-8 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -291,15 +300,27 @@ export default function AnalyticsPage() {
         </div>
       ) : (
         <>
-          {/* ── KPI cards (basic + full) ───────────────────────────────────────── */}
+          {/* ── KPI cards ─────────────────────────────────────────────────────── */}
           <div className="grid grid-cols-5 gap-4 mb-8">
             {[
-              { label: 'Total clients',   value: summary.totalClients, icon: Users,      color: 'bg-blue-50 text-blue-600' },
-              { label: 'QBRs generated',  value: summary.totalQBRs,   icon: FileText,   color: 'bg-purple-50 text-purple-600' },
               {
-                label: 'Export packages',
+                label: 'Total clients',
+                value: summary.totalClients,
+                sub:   undefined as string | undefined,
+                icon:  Users,
+                color: 'bg-blue-50 text-blue-600',
+              },
+              {
+                label: 'QBRs generated',
+                value: summary.totalQBRs,
+                sub:   undefined,
+                icon:  FileText,
+                color: 'bg-purple-50 text-purple-600',
+              },
+              {
+                label: exportKpiLabel,
                 value: summary.totalPackages,
-                sub:   `${summary.totalDownloads} file downloads`,
+                sub:   exportKpiSub,
                 icon:  Download,
                 color: 'bg-green-50 text-green-600',
               },
@@ -329,7 +350,7 @@ export default function AnalyticsPage() {
                   </div>
                 </div>
                 <div className="text-xl font-bold text-navy-800 leading-none">{s.value}</div>
-                {'sub' in s && s.sub && <div className="text-[11px] text-gray-400 mt-1">{s.sub}</div>}
+                {s.sub && <div className="text-[11px] text-gray-400 mt-1">{s.sub}</div>}
               </div>
             ))}
           </div>
@@ -489,7 +510,7 @@ export default function AnalyticsPage() {
             )}
           </div>
 
-          {/* ── Row 4: Uncovered clients (basic + full) ───────────────────────── */}
+          {/* ── Row 4: Uncovered clients ──────────────────────────────────────── */}
           {summary.uncoveredClients.length > 0 && (
             <div className="card p-5">
               <div className="flex items-center gap-2 mb-4">
@@ -512,4 +533,5 @@ export default function AnalyticsPage() {
     </div>
   )
 }
+
 
