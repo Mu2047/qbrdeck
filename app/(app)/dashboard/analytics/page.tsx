@@ -1,17 +1,19 @@
-
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
 import {
   BarChart2, Users, FileText, TrendingUp,
-  AlertTriangle, CheckCircle, Clock, Shield, Download,
+  AlertTriangle, CheckCircle, Clock, Shield, Download, Lock,
 } from 'lucide-react'
+import Link from 'next/link'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Client { id: string; name: string }
 
 interface AnalyticsData {
+  analyticsAccess:  'basic' | 'full'
+  upgradeMessage:   string | null
   summary: {
     totalClients:     number
     totalQBRs:        number
@@ -60,13 +62,35 @@ function scoreBarColor(score: number) {
   return score >= 80 ? 'bg-green-500' : score >= 60 ? 'bg-amber-500' : 'bg-red-500'
 }
 
-// ── Bar chart component ───────────────────────────────────────────────────────
+// ── Locked widget placeholder ─────────────────────────────────────────────────
+
+function LockedWidget({ title, icon: Icon }: { title: string; icon: React.ElementType }) {
+  return (
+    <div className="card p-5 relative overflow-hidden">
+      <div className="flex items-center gap-2 mb-4">
+        <Icon size={14} className="text-gray-300" />
+        <h2 className="font-semibold text-gray-300 text-sm">{title}</h2>
+      </div>
+      <div className="flex flex-col items-center justify-center py-8 gap-3">
+        <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center">
+          <Lock size={16} className="text-gray-400" />
+        </div>
+        <p className="text-sm text-gray-400 text-center">Advanced analytics is available on Growth and Agency plans.</p>
+        <Link href="/dashboard/billing" className="text-xs font-medium text-navy-700 underline hover:text-navy-900">
+          Upgrade to unlock →
+        </Link>
+      </div>
+    </div>
+  )
+}
+
+// ── Bar chart ─────────────────────────────────────────────────────────────────
 
 function SimpleBarChart({ data, valueKey, color = 'bg-navy-600', label = '' }: {
-  data:      Record<string, string | number>[]
-  valueKey:  string
-  color?:    string
-  label?:    string
+  data:     Record<string, string | number>[]
+  valueKey: string
+  color?:   string
+  label?:   string
 }) {
   const values = data.map(d => Number(d[valueKey]) || 0)
   const max    = Math.max(...values, 1)
@@ -78,22 +102,18 @@ function SimpleBarChart({ data, valueKey, color = 'bg-navy-600', label = '' }: {
   return (
     <div className={`flex items-end gap-2 h-20 pt-2 ${data.length === 1 ? 'px-24' : ''}`}>
       {data.map((d, i) => {
-        const val = Number(d[valueKey]) || 0
+        const val  = Number(d[valueKey]) || 0
         const hPct = Math.max((val / max) * 70, val > 0 ? 8 : 0)
         return (
           <div key={i} className="flex-1 flex flex-col items-center gap-1 group relative">
-            {/* Tooltip */}
             <div className="absolute -top-8 left-1/2 -translate-x-1/2 hidden group-hover:flex bg-navy-800 text-white text-[10px] rounded px-2 py-1 whitespace-nowrap z-10 shadow-lg">
               {formatMonth(String(d.month))}: <strong className="ml-1">{val}</strong>{label ? ` ${label}` : ''}
             </div>
-            {/* Value label on bar */}
-            {val > 0 && (
-              <span className="text-[10px] font-semibold text-navy-700 mb-0.5">{val}</span>
-            )}
+            {val > 0 && <span className="text-[10px] font-semibold text-navy-700 mb-0.5">{val}</span>}
             <div className="w-full flex flex-col justify-end" style={{ height: '64px' }}>
               <div
                 className={`w-full rounded-t ${color} hover:opacity-80 transition-opacity`}
-                style={{ height: `${hPct}%`, minHeight: val > 0 ? '6px' : '0' }}
+                style={{ height: `${Math.min(hPct, 60)}%`, minHeight: val > 0 ? '6px' : '0' }}
               />
             </div>
             <span className="text-[9px] text-gray-400 text-center leading-tight">{formatMonth(String(d.month))}</span>
@@ -110,7 +130,7 @@ function ExportDonut({ pdf, pptx }: { pdf: number; pptx: number }) {
   const total = pdf + pptx
   if (total === 0) return <p className="text-sm text-gray-400 text-center py-6">No exports yet.</p>
 
-  const pdfPct  = Math.round((pdf  / total) * 100)
+  const pdfPct  = Math.round((pdf / total) * 100)
   const pptxPct = 100 - pdfPct
   const r = 36, cx = 44, cy = 44, circumference = 2 * Math.PI * r
   const pdfDash  = (pdfPct  / 100) * circumference
@@ -119,12 +139,10 @@ function ExportDonut({ pdf, pptx }: { pdf: number; pptx: number }) {
   return (
     <div className="flex items-center gap-6">
       <svg width="88" height="88" viewBox="0 0 88 88">
-        {/* PPTX (gold, background arc) */}
         <circle cx={cx} cy={cy} r={r} fill="none" stroke="#B8973A" strokeWidth="10"
           strokeDasharray={`${pptxDash} ${circumference - pptxDash}`}
           strokeDashoffset={-pdfDash} strokeLinecap="round"
           transform={`rotate(-90 ${cx} ${cy})`} />
-        {/* PDF (navy, foreground arc) */}
         <circle cx={cx} cy={cy} r={r} fill="none" stroke="#1e3a5f" strokeWidth="10"
           strokeDasharray={`${pdfDash} ${circumference - pdfDash}`}
           strokeLinecap="round"
@@ -152,7 +170,7 @@ function ExportDonut({ pdf, pptx }: { pdf: number; pptx: number }) {
   )
 }
 
-// ── Main page ─────────────────────────────────────────────────────────────────
+// ── Range options ─────────────────────────────────────────────────────────────
 
 const RANGE_OPTIONS = [
   { value: '30d', label: 'Last 30 days'  },
@@ -161,6 +179,8 @@ const RANGE_OPTIONS = [
   { value: '1y',  label: 'This year'     },
   { value: 'all', label: 'All time'      },
 ]
+
+// ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function AnalyticsPage() {
   const [data,     setData]     = useState<AnalyticsData | null>(null)
@@ -178,9 +198,6 @@ export default function AnalyticsPage() {
   }, [range, clientId])
 
   useEffect(() => { load() }, [load])
-
-  // ── Empty state ─────────────────────────────────────────────────────────────
-  const isEmpty = data && data.summary.totalQBRs === 0 && data.qbrActivity.length === 0
 
   if (loading) {
     return (
@@ -210,41 +227,60 @@ export default function AnalyticsPage() {
 
   if (!data) return null
 
-  const { summary, clients, qbrActivity, healthTrends, exportActivity, exportTotals, topRiskFlags, highRiskClients } = data
+  const {
+    analyticsAccess, summary, clients, qbrActivity,
+    healthTrends, exportActivity, exportTotals, topRiskFlags, highRiskClients,
+  } = data
+
+  const isFullAnalytics = analyticsAccess === 'full'
+  const isEmpty = summary.totalQBRs === 0 && qbrActivity.length === 0
 
   return (
     <div className="p-8">
 
-      {/* ── Header + filters ──────────────────────────────────────────────────── */}
+      {/* ── Header ────────────────────────────────────────────────────────────── */}
       <div className="flex items-start justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold text-navy-800">Analytics</h1>
-          <p className="text-gray-500 text-sm mt-1">Workspace performance · all data is scoped to your workspace</p>
+          <p className="text-gray-500 text-sm mt-1">
+            Workspace performance · all data is scoped to your workspace
+            {!isFullAnalytics && (
+              <span className="ml-2 inline-flex items-center gap-1 text-amber-600 font-medium">
+                <Lock size={11} /> Basic plan
+              </span>
+            )}
+          </p>
         </div>
-        <div className="flex items-center gap-3">
-          {/* Client filter */}
-          <select
-            value={clientId}
-            onChange={e => setClientId(e.target.value)}
-            className="input text-sm py-1.5 px-3 pr-8"
-          >
-            <option value="all">All clients</option>
-            {clients.map(c => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-          {/* Date range filter */}
-          <select
-            value={range}
-            onChange={e => setRange(e.target.value)}
-            className="input text-sm py-1.5 px-3 pr-8"
-          >
-            {RANGE_OPTIONS.map(o => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
-        </div>
+
+        {/* Filters — full analytics only */}
+        {isFullAnalytics && (
+          <div className="flex items-center gap-3">
+            <select value={clientId} onChange={e => setClientId(e.target.value)} className="input text-sm py-1.5 px-3 pr-8">
+              <option value="all">All clients</option>
+              {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            <select value={range} onChange={e => setRange(e.target.value)} className="input text-sm py-1.5 px-3 pr-8">
+              {RANGE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+        )}
       </div>
+
+      {/* ── Upgrade banner for basic plans ────────────────────────────────────── */}
+      {!isFullAnalytics && (
+        <div className="rounded-lg bg-amber-50 border border-amber-200 px-5 py-4 mb-8 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Lock size={16} className="text-amber-500 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-medium text-amber-800">Advanced analytics is available on Growth and Agency plans.</p>
+              <p className="text-xs text-amber-600 mt-0.5">You're seeing summary metrics only. Upgrade to unlock health score trends, export activity, risk flags, and client filters.</p>
+            </div>
+          </div>
+          <Link href="/dashboard/billing" className="btn-primary text-xs py-1.5 px-3 flex-shrink-0 ml-6">
+            Upgrade plan
+          </Link>
+        </div>
+      )}
 
       {/* ── Empty state ────────────────────────────────────────────────────────── */}
       {isEmpty ? (
@@ -255,21 +291,11 @@ export default function AnalyticsPage() {
         </div>
       ) : (
         <>
-          {/* ── Summary KPI cards ─────────────────────────────────────────────── */}
+          {/* ── KPI cards (basic + full) ───────────────────────────────────────── */}
           <div className="grid grid-cols-5 gap-4 mb-8">
             {[
-              {
-                label: 'Total clients',
-                value: summary.totalClients,
-                icon:  Users,
-                color: 'bg-blue-50 text-blue-600',
-              },
-              {
-                label: 'QBRs generated',
-                value: summary.totalQBRs,
-                icon:  FileText,
-                color: 'bg-purple-50 text-purple-600',
-              },
+              { label: 'Total clients',   value: summary.totalClients, icon: Users,      color: 'bg-blue-50 text-blue-600' },
+              { label: 'QBRs generated',  value: summary.totalQBRs,   icon: FileText,   color: 'bg-purple-50 text-purple-600' },
               {
                 label: 'Export packages',
                 value: summary.totalPackages,
@@ -303,152 +329,167 @@ export default function AnalyticsPage() {
                   </div>
                 </div>
                 <div className="text-xl font-bold text-navy-800 leading-none">{s.value}</div>
-                {s.sub && <div className="text-[11px] text-gray-400 mt-1">{s.sub}</div>}
+                {'sub' in s && s.sub && <div className="text-[11px] text-gray-400 mt-1">{s.sub}</div>}
               </div>
             ))}
           </div>
 
-          {/* ── Row 1: QBR activity + Export activity ─────────────────────────── */}
+          {/* ── Row 1: QBR chart + Export activity ────────────────────────────── */}
           <div className="grid grid-cols-2 gap-5 mb-5">
-
             <div className="card p-5">
               <div className="flex items-center gap-2 mb-4">
                 <BarChart2 size={14} className="text-gray-400" />
                 <h2 className="font-semibold text-navy-800 text-sm">QBRs generated</h2>
                 <span className="ml-auto text-xs text-gray-400">
-                  {RANGE_OPTIONS.find(o => o.value === range)?.label}
+                  {RANGE_OPTIONS.find(o => o.value === range)?.label ?? 'Last 6 months'}
                 </span>
               </div>
               <SimpleBarChart data={qbrActivity as any} valueKey="count" color="bg-navy-600" label="QBRs" />
             </div>
 
-            <div className="card p-5">
-              <div className="flex items-center gap-2 mb-4">
-                <FileText size={14} className="text-gray-400" />
-                <h2 className="font-semibold text-navy-800 text-sm">Export activity</h2>
-                <span className="ml-auto text-xs text-gray-400">PDF vs PowerPoint</span>
+            {isFullAnalytics ? (
+              <div className="card p-5">
+                <div className="flex items-center gap-2 mb-4">
+                  <FileText size={14} className="text-gray-400" />
+                  <h2 className="font-semibold text-navy-800 text-sm">Export activity</h2>
+                  <span className="ml-auto text-xs text-gray-400">PDF vs PowerPoint</span>
+                </div>
+                <ExportDonut pdf={exportTotals.PDF} pptx={exportTotals.PPTX} />
+                <p className="text-[11px] text-gray-400 mt-3 border-t border-gray-50 pt-3">
+                  One export package includes both PDF and PowerPoint for the same QBR.
+                </p>
               </div>
-              <ExportDonut pdf={exportTotals.PDF} pptx={exportTotals.PPTX} />
-              <p className="text-[11px] text-gray-400 mt-3 border-t border-gray-50 pt-3">
-                One export package includes both PDF and PowerPoint for the same QBR.
-              </p>
-            </div>
-          </div>
-
-          {/* ── Row 2: Health score trends ────────────────────────────────────── */}
-          <div className="card p-5 mb-5">
-            <div className="flex items-center gap-2 mb-5">
-              <TrendingUp size={14} className="text-gray-400" />
-              <h2 className="font-semibold text-navy-800 text-sm">Health score trends</h2>
-              <span className="ml-auto text-xs text-gray-400">latest QBR per client per quarter</span>
-            </div>
-            {healthTrends.length === 0 ? (
-              <p className="text-sm text-gray-400 py-8 text-center">No scored QBRs in this period.</p>
             ) : (
-              <div className="space-y-6">
-                {healthTrends.map(client => (
-                  <div key={client.clientName}>
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="text-sm font-medium text-navy-800">{client.clientName}</span>
-                      <span className={`text-xs font-medium ${statusColor(client.points.at(-1)?.status ?? null)}`}>
-                        {client.points.at(-1)?.status ?? '—'}
-                      </span>
-                    </div>
-                    <div className="flex items-start gap-3 overflow-x-auto pb-1">
-                      {client.points.map((pt, i) => (
-                        <div key={i} className="flex-shrink-0 w-24 text-center">
-                          <div className={`rounded-lg border p-3 mb-1 ${statusBg(pt.status)}`}>
-                            <div className="text-xl font-bold text-navy-800">{pt.score}</div>
-                            <div className="text-[9px] text-gray-400">/100</div>
-                          </div>
-                          <div className="text-[10px] text-gray-500 font-medium">{pt.label}</div>
-                          <div className="text-[9px] text-gray-400">Generated {pt.generatedDate}</div>
-                          {pt.duplicateCount > 1 && (
-                            <div className="text-[9px] text-amber-600 mt-0.5">{pt.duplicateCount} QBRs</div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <LockedWidget title="Export activity" icon={FileText} />
             )}
           </div>
 
-          {/* ── Row 3: Risk flags + High-risk clients ─────────────────────────── */}
-          <div className="grid grid-cols-2 gap-5 mb-5">
-
-            <div className="card p-5">
+          {/* ── Row 2: Health score trends ────────────────────────────────────── */}
+          {isFullAnalytics ? (
+            <div className="card p-5 mb-5">
               <div className="flex items-center gap-2 mb-5">
-                <AlertTriangle size={14} className="text-gray-400" />
-                <h2 className="font-semibold text-navy-800 text-sm">Top risk flags</h2>
-                <span className="ml-auto text-xs text-gray-400">from QBR metrics</span>
+                <TrendingUp size={14} className="text-gray-400" />
+                <h2 className="font-semibold text-navy-800 text-sm">Health score trends</h2>
+                <span className="ml-auto text-xs text-gray-400">latest QBR per client per quarter</span>
               </div>
-              {topRiskFlags.length === 0 ? (
-                <div className="flex flex-col items-center py-4 gap-2">
-                  <CheckCircle size={24} className="text-green-400" />
-                  <p className="text-sm text-gray-400">No risk flags in this period.</p>
-                </div>
+              {healthTrends.length === 0 ? (
+                <p className="text-sm text-gray-400 py-8 text-center">No scored QBRs in this period.</p>
               ) : (
-                <div className="space-y-3">
-                  {topRiskFlags.map(({ flag, count }) => {
-                    const maxCount = topRiskFlags[0].count
-                    const pct      = Math.round((count / maxCount) * 100)
-                    return (
-                      <div key={flag}>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-sm text-gray-700">{flag}</span>
-                          <span className="text-xs font-semibold text-navy-800">{count} QBR{count !== 1 ? 's' : ''}</span>
-                        </div>
-                        <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-red-400 rounded-full transition-all" style={{ width: `${pct}%` }} />
-                        </div>
+                <div className="space-y-6">
+                  {healthTrends.map(client => (
+                    <div key={client.clientName}>
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-sm font-medium text-navy-800">{client.clientName}</span>
+                        <span className={`text-xs font-medium ${statusColor(client.points.at(-1)?.status ?? null)}`}>
+                          {client.points.at(-1)?.status ?? '—'}
+                        </span>
                       </div>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-
-            <div className="card p-5">
-              <div className="flex items-center gap-2 mb-5">
-                <Shield size={14} className="text-gray-400" />
-                <h2 className="font-semibold text-navy-800 text-sm">High-risk clients</h2>
-                <span className="ml-auto text-xs text-gray-400">High Risk = score below 60</span>
-              </div>
-              {highRiskClients.length === 0 ? (
-                <div className="flex flex-col items-center py-4 gap-2">
-                  <CheckCircle size={24} className="text-green-400" />
-                  <p className="text-sm text-gray-400">No high-risk clients.</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {highRiskClients.map(c => (
-                    <div key={c.clientName}>
-                      <div className="flex items-center justify-between mb-1">
-                        <div>
-                          <span className="text-sm font-medium text-navy-800">{c.clientName}</span>
-                          <span className="text-xs text-gray-400 ml-2">{c.lastQBR}</span>
-                        </div>
-                        <span className="text-xs font-medium text-red-600">{c.healthStatus}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                          <div
-                            className={`h-full rounded-full ${scoreBarColor(c.healthScore ?? 0)}`}
-                            style={{ width: `${c.healthScore ?? 0}%` }}
-                          />
-                        </div>
-                        <span className="text-xs font-semibold text-navy-800 w-8 text-right">{c.healthScore}</span>
+                      <div className="flex items-start gap-3 overflow-x-auto pb-1">
+                        {client.points.map((pt, i) => (
+                          <div key={i} className="flex-shrink-0 w-24 text-center">
+                            <div className={`rounded-lg border p-3 mb-1 ${statusBg(pt.status)}`}>
+                              <div className="text-xl font-bold text-navy-800">{pt.score}</div>
+                              <div className="text-[9px] text-gray-400">/100</div>
+                            </div>
+                            <div className="text-[10px] text-gray-500 font-medium">{pt.label}</div>
+                            <div className="text-[9px] text-gray-400">Generated {pt.generatedDate}</div>
+                            {pt.duplicateCount > 1 && (
+                              <div className="text-[9px] text-amber-600 mt-0.5">{pt.duplicateCount} QBRs</div>
+                            )}
+                          </div>
+                        ))}
                       </div>
                     </div>
                   ))}
                 </div>
               )}
             </div>
+          ) : (
+            <div className="mb-5">
+              <LockedWidget title="Health score trends" icon={TrendingUp} />
+            </div>
+          )}
+
+          {/* ── Row 3: Risk flags + High-risk clients ─────────────────────────── */}
+          <div className="grid grid-cols-2 gap-5 mb-5">
+            {isFullAnalytics ? (
+              <>
+                <div className="card p-5">
+                  <div className="flex items-center gap-2 mb-5">
+                    <AlertTriangle size={14} className="text-gray-400" />
+                    <h2 className="font-semibold text-navy-800 text-sm">Top risk flags</h2>
+                    <span className="ml-auto text-xs text-gray-400">from QBR metrics</span>
+                  </div>
+                  {topRiskFlags.length === 0 ? (
+                    <div className="flex flex-col items-center py-4 gap-2">
+                      <CheckCircle size={24} className="text-green-400" />
+                      <p className="text-sm text-gray-400">No risk flags in this period.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {topRiskFlags.map(({ flag, count }) => {
+                        const maxCount = topRiskFlags[0].count
+                        const pct      = Math.round((count / maxCount) * 100)
+                        return (
+                          <div key={flag}>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className="text-sm text-gray-700">{flag}</span>
+                              <span className="text-xs font-semibold text-navy-800">{count} QBR{count !== 1 ? 's' : ''}</span>
+                            </div>
+                            <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                              <div className="h-full bg-red-400 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="card p-5">
+                  <div className="flex items-center gap-2 mb-5">
+                    <Shield size={14} className="text-gray-400" />
+                    <h2 className="font-semibold text-navy-800 text-sm">High-risk clients</h2>
+                    <span className="ml-auto text-xs text-gray-400">High Risk = score below 60</span>
+                  </div>
+                  {highRiskClients.length === 0 ? (
+                    <div className="flex flex-col items-center py-4 gap-2">
+                      <CheckCircle size={24} className="text-green-400" />
+                      <p className="text-sm text-gray-400">No high-risk clients.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {highRiskClients.map(c => (
+                        <div key={c.clientName}>
+                          <div className="flex items-center justify-between mb-1">
+                            <div>
+                              <span className="text-sm font-medium text-navy-800">{c.clientName}</span>
+                              <span className="text-xs text-gray-400 ml-2">{c.lastQBR}</span>
+                            </div>
+                            <span className="text-xs font-medium text-red-600">{c.healthStatus}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                              <div className={`h-full rounded-full ${scoreBarColor(c.healthScore ?? 0)}`}
+                                style={{ width: `${c.healthScore ?? 0}%` }} />
+                            </div>
+                            <span className="text-xs font-semibold text-navy-800 w-8 text-right">{c.healthScore}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <LockedWidget title="Top risk flags" icon={AlertTriangle} />
+                <LockedWidget title="High-risk clients" icon={Shield} />
+              </>
+            )}
           </div>
 
-          {/* ── Row 4: Uncovered clients ──────────────────────────────────────── */}
+          {/* ── Row 4: Uncovered clients (basic + full) ───────────────────────── */}
           {summary.uncoveredClients.length > 0 && (
             <div className="card p-5">
               <div className="flex items-center gap-2 mb-4">
@@ -471,3 +512,4 @@ export default function AnalyticsPage() {
     </div>
   )
 }
+

@@ -7,6 +7,7 @@ import { can } from '@/lib/permissions'
 import { resolveBranding, buildFooterText } from '@/lib/branding'
 import { resolveHealthScore } from '@/lib/health-score'
 import { resolveSlides, buildPlaceholderContext } from '@/lib/placeholders'
+import { getLimits, isUnderLimit, shouldResetPeriod } from '@/lib/limits'
 import { VERSIONS } from '@/lib/versions'
 
 export async function POST(req: NextRequest) {
@@ -34,10 +35,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'QBR has no generated slides' }, { status: 400 })
 
     // ── Export limit enforcement ──────────────────────────────────────────────
-    const { PLAN_LIMITS, shouldResetPeriod, isUnderLimit } = await import('@/lib/limits')
-    const plan = (membership.subscription?.plan ?? 'FREE') as keyof typeof PLAN_LIMITS
-    const limits = PLAN_LIMITS[plan]
-    const sub = membership.subscription
+    const plan   = (membership.subscription?.plan ?? 'FREE') as string
+    const limits = getLimits(plan)
+    const sub    = membership.subscription
 
     if (sub && shouldResetPeriod(new Date(sub.periodStart))) {
       await prisma.subscription.update({
@@ -53,16 +53,16 @@ export async function POST(req: NextRequest) {
 
     if (!alreadyExported) {
       const exportCount = sub?.exportCount ?? 0
-      if (!isUnderLimit(exportCount, limits.exportsPerMonth)) {
+      if (!isUnderLimit(exportCount, limits.exportPackagesPerMonth)) {
         return NextResponse.json(
-          { error: 'LIMIT_REACHED', limit: 'exports', plan, max: limits.exportsPerMonth },
+          { error: 'LIMIT_REACHED', limit: 'exports', plan, max: limits.exportPackagesPerMonth },
           { status: 403 }
         )
       }
     }
     // ── End export limit enforcement ──────────────────────────────────────────
 
-    // ── Workspace + branding (single resolver) ────────────────────────────────
+    // ── Workspace + branding ──────────────────────────────────────────────────
     const workspace = await prisma.workspace.findUnique({
       where: { id: membership.workspaceId },
     })
@@ -72,10 +72,10 @@ export async function POST(req: NextRequest) {
       workspaceName: workspace?.name ?? 'QBR Deck',
     })
 
-    // ── Health score (use stored value, fall back to recompute) ───────────────
+    // ── Health score ──────────────────────────────────────────────────────────
     const healthResult = resolveHealthScore(qbr)
 
-    // ── Footer with live client name and quarter injected ─────────────────────
+    // ── Footer ────────────────────────────────────────────────────────────────
     const footerText = buildFooterText({
       branding,
       clientName: qbr.client.name,
@@ -83,8 +83,7 @@ export async function POST(req: NextRequest) {
       year:       qbr.year,
     })
 
-    // ── Resolve placeholders in all slide content ─────────────────────────────
-    // Uses live client name — corrects typos without regeneration
+    // ── Resolve placeholders ──────────────────────────────────────────────────
     const placeholderCtx = buildPlaceholderContext({
       clientName:     qbr.client.name,
       clientIndustry: qbr.client.industry,
@@ -93,7 +92,7 @@ export async function POST(req: NextRequest) {
       workspaceName:  workspace?.name ?? 'QBR Deck',
       mspName:        branding.mspName,
       healthScore:    healthResult?.score  ?? qbr.healthScore,
-      healthStatus:   healthResult?.status ?? (qbr as any).healthStatus,
+      healthStatus:   healthResult?.status ?? qbr.healthStatus,
       branding:       { ...branding, footerText },
       generatedAt:    qbr.createdAt,
     })
@@ -131,17 +130,14 @@ export async function POST(req: NextRequest) {
       data: { status: 'EXPORTED', exportedById: membership.userId },
     })
 
-    // ── Export package tracking + billing ─────────────────────────────────────
-    // Reuse existing package ID if PDF was already exported for this QBR.
-    // PDF and PPTX share one exportPackageId — one credit consumed total.
+    // ── ExportEvent + billing ─────────────────────────────────────────────────
     const existingEvent = await prisma.exportEvent.findFirst({
       where: { qbrId },
       orderBy: { exportedAt: 'asc' },
     })
     const exportPackageId = existingEvent?.exportPackageId ?? `pkg_${qbrId}`
-
-    const isRedownload   = alreadyExported
-    const consumedCredit = !alreadyExported
+    const isRedownload    = alreadyExported
+    const consumedCredit  = !alreadyExported
 
     await prisma.exportEvent.create({
       data: {
@@ -155,17 +151,16 @@ export async function POST(req: NextRequest) {
         isRedownload,
         consumedExportCredit:       consumedCredit,
         brandingMode:               branding.brandingMode,
-        planAtExport:               plan,
+        planAtExport:               plan as any,
         clientNameAtExport:         qbr.client.name,
         mspNameAtExport:            branding.mspName,
         healthScoreAtExport:        healthResult?.score  ?? qbr.healthScore  ?? null,
-        healthStatusAtExport:       healthResult?.status ?? (qbr as any).healthStatus ?? null,
+        healthStatusAtExport:       healthResult?.status ?? qbr.healthStatus ?? null,
         healthScoreVersionAtExport: healthResult?.scoreVersion ?? qbr.healthScoreVersion ?? null,
         templateVersion:            VERSIONS.exportTemplate,
       },
     })
 
-    // ── Update subscription export counters (first export only) ──────────────
     if (!alreadyExported) {
       const current: string[] = JSON.parse(sub?.exportedQbrIds ?? '[]')
       current.push(qbrId)
@@ -192,7 +187,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Sanitize filename ─────────────────────────────────────────────────────
     const safeName = qbr.client.name.replace(/[^a-zA-Z0-9\s\-_]/g, '').trim()
 
     return new NextResponse(buffer as unknown as BodyInit, {

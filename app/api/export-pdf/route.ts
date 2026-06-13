@@ -7,8 +7,8 @@ import { can } from '@/lib/permissions'
 import { resolveBranding, buildFooterText } from '@/lib/branding'
 import { resolveHealthScore } from '@/lib/health-score'
 import { resolveSlides, buildPlaceholderContext } from '@/lib/placeholders'
+import { getLimits, isUnderLimit, shouldResetPeriod } from '@/lib/limits'
 import { VERSIONS } from '@/lib/versions'
-
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,10 +35,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'QBR has no generated slides' }, { status: 400 })
 
     // ── Export limit enforcement ──────────────────────────────────────────────
-    const { PLAN_LIMITS, shouldResetPeriod, isUnderLimit } = await import('@/lib/limits')
-    const plan = (membership.subscription?.plan ?? 'FREE') as keyof typeof PLAN_LIMITS
-    const limits = PLAN_LIMITS[plan]
-    const sub = membership.subscription
+    const plan   = (membership.subscription?.plan ?? 'FREE') as string
+    const limits = getLimits(plan)
+    const sub    = membership.subscription
 
     if (sub && shouldResetPeriod(new Date(sub.periodStart))) {
       await prisma.subscription.update({
@@ -54,16 +53,16 @@ export async function POST(req: NextRequest) {
 
     if (!alreadyExported) {
       const exportCount = sub?.exportCount ?? 0
-      if (!isUnderLimit(exportCount, limits.exportsPerMonth)) {
+      if (!isUnderLimit(exportCount, limits.exportPackagesPerMonth)) {
         return NextResponse.json(
-          { error: 'LIMIT_REACHED', limit: 'exports', plan, max: limits.exportsPerMonth },
+          { error: 'LIMIT_REACHED', limit: 'exports', plan, max: limits.exportPackagesPerMonth },
           { status: 403 }
         )
       }
     }
     // ── End export limit enforcement ──────────────────────────────────────────
 
-    // ── Workspace + branding (single resolver) ────────────────────────────────
+    // ── Workspace + branding ──────────────────────────────────────────────────
     const workspace = await prisma.workspace.findUnique({
       where: { id: membership.workspaceId },
     })
@@ -73,30 +72,29 @@ export async function POST(req: NextRequest) {
       workspaceName: workspace?.name ?? 'QBR Deck',
     })
 
-    // ── Health score (use stored value, fall back to recompute) ───────────────
+    // ── Health score ──────────────────────────────────────────────────────────
     const healthResult = resolveHealthScore(qbr)
 
-    // ── Footer with client name and quarter injected ───────────────────────────
+    // ── Footer ────────────────────────────────────────────────────────────────
     const footerText = buildFooterText({
       branding,
-      clientName: qbr.client.name,   // always uses live client record
+      clientName: qbr.client.name,
       quarter:    qbr.quarter,
       year:       qbr.year,
     })
 
-    // ── Resolve placeholders in all slide content ─────────────────────────────
-    // Uses live client name from DB — corrects any typos without regeneration
+    // ── Resolve placeholders ──────────────────────────────────────────────────
     const placeholderCtx = buildPlaceholderContext({
-      clientName:    qbr.client.name,
+      clientName:     qbr.client.name,
       clientIndustry: qbr.client.industry,
-      quarter:       qbr.quarter,
-      year:          qbr.year,
-      workspaceName: workspace?.name ?? 'QBR Deck',
-      mspName:       branding.mspName,
-      healthScore:   healthResult?.score ?? qbr.healthScore,
-      healthStatus:  healthResult?.status ?? null,
-      branding:      { ...branding, footerText },
-      generatedAt:   qbr.createdAt,
+      quarter:        qbr.quarter,
+      year:           qbr.year,
+      workspaceName:  workspace?.name ?? 'QBR Deck',
+      mspName:        branding.mspName,
+      healthScore:    healthResult?.score  ?? qbr.healthScore,
+      healthStatus:   healthResult?.status ?? qbr.healthStatus,
+      branding:       { ...branding, footerText },
+      generatedAt:    qbr.createdAt,
     })
 
     const resolvedSlides = resolveSlides(qbr.slides as Array<Record<string, unknown>>, placeholderCtx)
@@ -129,20 +127,15 @@ export async function POST(req: NextRequest) {
       data: { status: 'EXPORTED', exportedById: membership.userId },
     })
 
-    // ── Export package tracking + billing ─────────────────────────────────────
-    // Find or create the export package ID for this QBR.
-    // PDF and PPTX for the same QBR share one package ID — one credit consumed.
-    let exportPackageId: string
+    // ── ExportEvent + billing ─────────────────────────────────────────────────
     const existingEvent = await prisma.exportEvent.findFirst({
       where: { qbrId },
       orderBy: { exportedAt: 'asc' },
     })
-    exportPackageId = existingEvent?.exportPackageId ?? `pkg_${qbrId}`
-
+    const exportPackageId  = existingEvent?.exportPackageId ?? `pkg_${qbrId}`
     const isRedownload     = alreadyExported
     const consumedCredit   = !alreadyExported
 
-    // Write ExportEvent record
     await prisma.exportEvent.create({
       data: {
         id:                         `${Date.now()}_pdf_${qbrId}`,
@@ -155,17 +148,16 @@ export async function POST(req: NextRequest) {
         isRedownload,
         consumedExportCredit:       consumedCredit,
         brandingMode:               branding.brandingMode,
-        planAtExport:               plan,
+        planAtExport:               plan as any,
         clientNameAtExport:         qbr.client.name,
         mspNameAtExport:            branding.mspName,
         healthScoreAtExport:        healthResult?.score  ?? qbr.healthScore  ?? null,
-        healthStatusAtExport:       healthResult?.status ?? null,
+        healthStatusAtExport:       healthResult?.status ?? qbr.healthStatus ?? null,
         healthScoreVersionAtExport: healthResult?.scoreVersion ?? qbr.healthScoreVersion ?? null,
         templateVersion:            VERSIONS.exportTemplate,
       },
     })
 
-    // Update subscription export counters (only on first export of this QBR)
     if (!alreadyExported) {
       const current: string[] = JSON.parse(sub?.exportedQbrIds ?? '[]')
       current.push(qbrId)
@@ -192,7 +184,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Sanitize filename ─────────────────────────────────────────────────────
     const safeName = qbr.client.name.replace(/[^a-zA-Z0-9\s\-_]/g, '').trim()
 
     return new NextResponse(buffer as unknown as BodyInit, {
