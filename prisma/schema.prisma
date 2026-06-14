@@ -8,6 +8,8 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
 enum Plan {
   FREE
   SOLO
@@ -45,6 +47,16 @@ enum ExportType {
   PPTX
 }
 
+// NEW — Stripe webhook event processing status
+enum StripeEventStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+// ─── Workspace ────────────────────────────────────────────────────────────────
+
 model Workspace {
   id           String            @id @default(cuid())
   name         String
@@ -58,6 +70,8 @@ model Workspace {
   invites      WorkspaceInvite[]
   members      WorkspaceMember[]
 }
+
+// ─── User ─────────────────────────────────────────────────────────────────────
 
 model User {
   id             String            @id @default(cuid())
@@ -75,6 +89,8 @@ model User {
   memberships    WorkspaceMember[]
 }
 
+// ─── WorkspaceMember ──────────────────────────────────────────────────────────
+
 model WorkspaceMember {
   id          String    @id @default(cuid())
   workspaceId String
@@ -87,6 +103,8 @@ model WorkspaceMember {
   @@unique([workspaceId, userId])
   @@index([userId])
 }
+
+// ─── WorkspaceInvite ──────────────────────────────────────────────────────────
 
 model WorkspaceInvite {
   id          String       @id @default(cuid())
@@ -105,6 +123,10 @@ model WorkspaceInvite {
   @@index([token])
 }
 
+// ─── Subscription ─────────────────────────────────────────────────────────────
+// Billing belongs to the workspace. All lifecycle fields are nullable so
+// existing records are not broken by migration.
+
 model Subscription {
   id                   String    @id @default(cuid())
   workspaceId          String    @unique
@@ -121,7 +143,31 @@ model Subscription {
   exportedQbrIds       String    @default("[]")
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
+
+  // ── NEW: Stripe lifecycle fields (all nullable — safe migration) ───────────
+
+  // Authoritative Stripe subscription status string
+  // e.g. "active" | "trialing" | "past_due" | "unpaid" | "canceled"
+  //      | "incomplete" | "incomplete_expired" | "paused"
+  stripeStatus             String?
+
+  // Stripe billing period boundaries — sourced from Stripe, not derived
+  stripeCurrentPeriodStart DateTime?
+  stripeCurrentPeriodEnd   DateTime?
+
+  // Payment failure lifecycle
+  // pastDueAt: when the first payment failure was detected
+  // graceEndsAt: when paid access expires if payment is not recovered
+  // Both set on first invoice.payment_failed; NOT reset on Stripe retries
+  // Both cleared on successful payment recovery (invoice.paid)
+  pastDueAt                DateTime?
+  graceEndsAt              DateTime?
+
+  // True when Stripe will cancel at period end (user requested cancellation)
+  cancelAtPeriodEnd        Boolean   @default(false)
 }
+
+// ─── Client ───────────────────────────────────────────────────────────────────
 
 model Client {
   id           String        @id @default(cuid())
@@ -143,6 +189,8 @@ model Client {
 
   @@index([workspaceId])
 }
+
+// ─── QBR ──────────────────────────────────────────────────────────────────────
 
 model QBR {
   id                    String        @id @default(cuid())
@@ -180,7 +228,10 @@ model QBR {
   exportEvents          ExportEvent[] @relation("QBRExports")
 
   @@index([clientId])
+  @@index([createdAt])
 }
+
+// ─── ExportEvent ──────────────────────────────────────────────────────────────
 
 /// This model contains row level security and requires additional setup for migrations.
 model ExportEvent {
@@ -212,4 +263,27 @@ model ExportEvent {
   @@index([clientId])
   @@index([exportPackageId])
   @@index([exportedAt])
+}
+
+// ─── StripeEvent ──────────────────────────────────────────────────────────────
+// Idempotency log for Stripe webhook events.
+// Prevents duplicate processing when Stripe retries delivery.
+// Never stores secrets, tokens, or full webhook payloads.
+
+model StripeEvent {
+  id            String            @id @default(cuid())
+  stripeEventId String            @unique  // Stripe evt_xxx — idempotency key
+  eventType     String            // e.g. "invoice.paid"
+  status        StripeEventStatus @default(RECEIVED)
+  receivedAt    DateTime          @default(now())
+  processedAt   DateTime?
+  errorMessage  String?           // short, sanitized — no secrets or payloads
+  retryCount    Int               @default(0)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([stripeEventId])
+  @@index([status])
+  @@index([eventType])
+  @@index([receivedAt])
 }
