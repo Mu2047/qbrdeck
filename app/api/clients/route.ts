@@ -26,11 +26,10 @@ export async function GET() {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const clients = await prisma.client.findMany({
-      where: { workspaceId: membership.workspaceId },
-      include: { qbrs: { orderBy: { createdAt: 'desc' }, take: 1 } },
+      where: { workspaceId: membership.workspaceId, deletedAt: null },
+      include: { qbrs: { where: { deletedAt: null }, orderBy: { createdAt: 'desc' }, take: 1 } },
       orderBy: { name: 'asc' },
     })
-
     return NextResponse.json(clients)
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })

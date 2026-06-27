@@ -4,8 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { sendQBREmail } from '@/lib/email'
 import { getWorkspaceMembership } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
-import { randomBytes } from 'crypto'
-
+import { createShareLink, hashShareToken } from '@/lib/share-links'
 export async function POST(req: NextRequest, { params }: { params: { qbrId: string } }) {
   try {
     const { userId: clerkId } = auth()
@@ -21,20 +20,18 @@ export async function POST(req: NextRequest, { params }: { params: { qbrId: stri
     if (!email) return NextResponse.json({ error: 'Email required' }, { status: 400 })
 
     const qbr = await prisma.qBR.findFirst({
-      where: { id: params.qbrId },
+      where: { id: params.qbrId, workspaceId: membership.workspaceId, deletedAt: null },
       include: { client: true },
     })
 
-    if (!qbr || qbr.client.workspaceId !== membership.workspaceId)
-      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!qbr) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    const token = qbr.shareToken ?? randomBytes(16).toString('hex')
-    if (!qbr.shareToken) {
-      await prisma.qBR.update({
-        where: { id: params.qbrId },
-        data:  { shareToken: token },
-      })
-    }
+    // Always mint a fresh, hashed ShareLink for the emailed link
+    const token = await createShareLink({
+      qbrId:       qbr.id,
+      workspaceId: membership.workspaceId,
+      userId:      membership.userId,
+    })
 
     const portalUrl = `${process.env.NEXT_PUBLIC_APP_URL}/portal/${token}`
     const workspace = await prisma.workspace.findUnique({

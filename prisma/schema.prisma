@@ -47,7 +47,6 @@ enum ExportType {
   PPTX
 }
 
-// NEW — Stripe webhook event processing status
 enum StripeEventStatus {
   RECEIVED
   PROCESSING
@@ -64,11 +63,16 @@ model Workspace {
   logoUrl      String?
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
+  deletedAt    DateTime? // NEW — soft delete / archive
   clients      Client[]
+  qbrs         QBR[] // NEW — direct workspace→QBR relation
   exportEvents ExportEvent[]     @relation("WorkspaceExports")
+  shareLinks   ShareLink[] // NEW
   subscription Subscription?
   invites      WorkspaceInvite[]
   members      WorkspaceMember[]
+
+  @@index([deletedAt])
 }
 
 // ─── User ─────────────────────────────────────────────────────────────────────
@@ -86,6 +90,8 @@ model User {
   qbrsCreated    QBR[]             @relation("CreatedBy")
   qbrsExported   QBR[]             @relation("ExportedBy")
   invitesSent    WorkspaceInvite[] @relation("InvitedBy")
+  invitesAccepted WorkspaceInvite[] @relation("AcceptedBy") // NEW
+  shareLinks     ShareLink[] // NEW
   memberships    WorkspaceMember[]
 }
 
@@ -102,6 +108,8 @@ model WorkspaceMember {
 
   @@unique([workspaceId, userId])
   @@index([userId])
+  // Supports "find an OWNER in this workspace" / last-owner checks
+  @@index([workspaceId, role])
 }
 
 // ─── WorkspaceInvite ──────────────────────────────────────────────────────────
@@ -116,16 +124,21 @@ model WorkspaceInvite {
   invitedById String
   createdAt   DateTime     @default(now())
   expiresAt   DateTime
-  invitedBy   User         @relation("InvitedBy", fields: [invitedById], references: [id])
-  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // NEW — acceptance / revocation audit
+  acceptedAt       DateTime?
+  acceptedByUserId String?
+  revokedAt        DateTime?
+
+  invitedBy   User      @relation("InvitedBy", fields: [invitedById], references: [id])
+  acceptedBy  User?     @relation("AcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull) // NEW
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@unique([workspaceId, email])
-  @@index([token])
+  // NOTE: removed redundant @@index([token]) — `token @unique` already indexes it.
 }
 
 // ─── Subscription ─────────────────────────────────────────────────────────────
-// Billing belongs to the workspace. All lifecycle fields are nullable so
-// existing records are not broken by migration.
 
 model Subscription {
   id                   String    @id @default(cuid())
@@ -140,30 +153,20 @@ model Subscription {
   periodStart          DateTime  @default(now())
   qbrCount             Int       @default(0)
   exportCount          Int       @default(0)
+
+  // DEPRECATED — ExportEvent is the source of truth for exports.
+  // Retained temporarily for migration compatibility; remove after confirming
+  // no code path reads/writes it. Do NOT treat as authoritative.
   exportedQbrIds       String    @default("[]")
+
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
-  // ── NEW: Stripe lifecycle fields (all nullable — safe migration) ───────────
-
-  // Authoritative Stripe subscription status string
-  // e.g. "active" | "trialing" | "past_due" | "unpaid" | "canceled"
-  //      | "incomplete" | "incomplete_expired" | "paused"
   stripeStatus             String?
-
-  // Stripe billing period boundaries — sourced from Stripe, not derived
   stripeCurrentPeriodStart DateTime?
   stripeCurrentPeriodEnd   DateTime?
-
-  // Payment failure lifecycle
-  // pastDueAt: when the first payment failure was detected
-  // graceEndsAt: when paid access expires if payment is not recovered
-  // Both set on first invoice.payment_failed; NOT reset on Stripe retries
-  // Both cleared on successful payment recovery (invoice.paid)
   pastDueAt                DateTime?
   graceEndsAt              DateTime?
-
-  // True when Stripe will cancel at period end (user requested cancellation)
   cancelAtPeriodEnd        Boolean   @default(false)
 }
 
@@ -173,8 +176,12 @@ model Client {
   id           String        @id @default(cuid())
   workspaceId  String
   workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdById  String
-  createdBy    User          @relation("ClientCreatedBy", fields: [createdById], references: [id])
+
+  // CHANGED — nullable + SetNull so deleting a creator never destroys/blocks
+  // historical business records.
+  createdById  String?
+  createdBy    User?         @relation("ClientCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
   name         String
   industry     String?
   contactName  String?
@@ -184,22 +191,38 @@ model Client {
   nextQbrDate  DateTime?
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
+  deletedAt    DateTime? // NEW — soft delete / archive
+
   qbrs         QBR[]
   exportEvents ExportEvent[] @relation("ClientExports")
 
+  // NEW — composite target so QBR can enforce same-workspace via composite FK.
+  @@unique([id, workspaceId])
   @@index([workspaceId])
+  @@index([workspaceId, nextQbrDate])
+  @@index([deletedAt])
 }
 
 // ─── QBR ──────────────────────────────────────────────────────────────────────
 
 model QBR {
-  id                    String        @id @default(cuid())
-  clientId              String
-  client                Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  createdById           String?
-  createdBy             User?         @relation("CreatedBy", fields: [createdById], references: [id])
-  exportedById          String?
-  exportedBy            User?         @relation("ExportedBy", fields: [exportedById], references: [id])
+  id          String @id @default(cuid())
+  clientId    String
+  workspaceId String // NEW — direct workspace scoping
+
+  // CHANGED — composite FK enforces QBR.workspaceId == Client.workspaceId at the
+  // database level. A QBR cannot reference a Client from another workspace.
+  // onDelete: Restrict — soft-delete clients instead of cascading.
+  client      Client @relation(fields: [clientId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+
+  // NEW — direct workspace relation (Restrict; workspaces are soft-deleted).
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+
+  createdById  String?
+  createdBy    User?    @relation("CreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  exportedById String?
+  exportedBy   User?    @relation("ExportedBy", fields: [exportedById], references: [id], onDelete: SetNull)
+
   quarter               String
   year                  Int
   status                QBRStatus     @default(DRAFT)
@@ -214,7 +237,12 @@ model QBR {
   upsellOpportunities   String?
   slides                Json?
   summary               String?
+
+  // DEPRECATED — superseded by ShareLink. Kept temporarily for transition so
+  // existing links keep working. Remove only after portal + send/share routes
+  // use ShareLink exclusively.
   shareToken            String?       @unique
+
   rawMetrics            Json?
   healthScore           Int?
   healthStatus          String?
@@ -223,27 +251,71 @@ model QBR {
   snapshot              Json?
   generatorVersion      String?
   exportTemplateVersion String?
-  createdAt             DateTime      @default(now())
-  updatedAt             DateTime      @updatedAt
-  exportEvents          ExportEvent[] @relation("QBRExports")
 
+  // NEW — explicit versioning (duplicate same-quarter QBRs remain valid).
+  version      Int       @default(1)
+  supersededAt DateTime?
+  isCurrent    Boolean   @default(true)
+
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime? // NEW — soft delete / archive
+
+  exportEvents ExportEvent[] @relation("QBRExports")
+  shareLinks   ShareLink[] // NEW
+
+  // Composite target so ShareLink (and any child) can enforce same-workspace
+  // via composite FK [qbrId, workspaceId] -> [id, workspaceId].
+  @@unique([id, workspaceId])
   @@index([clientId])
-  @@index([createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([clientId, quarter, year, createdAt])
+  @@index([deletedAt])
+}
+
+// ─── ShareLink ────────────────────────────────────────────────────────────────
+// Dedicated, audited public-portal link. Raw token lives ONLY in the URL;
+// the database stores a SHA-256 hash. Tokens are CSPRNG-generated (>=32 bytes).
+
+model ShareLink {
+  id              String   @id @default(cuid())
+  tokenHash       String   @unique // SHA-256 of the raw token; raw token never stored
+  qbrId           String
+  workspaceId     String
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  expiresAt       DateTime?
+  revokedAt       DateTime?
+  lastViewedAt    DateTime?
+  viewCount       Int      @default(0)
+
+  // Composite FK — a ShareLink cannot point at a QBR from another workspace.
+  qbr       QBR       @relation(fields: [qbrId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  createdBy User?     @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([qbrId])
+  @@index([workspaceId, createdAt])
+  @@index([expiresAt])
+  @@index([revokedAt])
 }
 
 // ─── ExportEvent ──────────────────────────────────────────────────────────────
+// Immutable billing/audit record. Protected from cascade destruction via
+// onDelete: Restrict on its QBR/Client/Workspace relations. Denormalized
+// snapshot fields are the durable human-readable record.
 
-/// This model contains row level security and requires additional setup for migrations.
 model ExportEvent {
   id                         String       @id
   qbrId                      String
-  qbr                        QBR          @relation("QBRExports", fields: [qbrId], references: [id], onDelete: Cascade)
+  qbr                        QBR          @relation("QBRExports", fields: [qbrId], references: [id], onDelete: Restrict)
   workspaceId                String
-  workspace                  Workspace    @relation("WorkspaceExports", fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace                  Workspace    @relation("WorkspaceExports", fields: [workspaceId], references: [id], onDelete: Restrict)
   clientId                   String
-  client                     Client       @relation("ClientExports", fields: [clientId], references: [id], onDelete: Cascade)
+  client                     Client       @relation("ClientExports", fields: [clientId], references: [id], onDelete: Restrict)
   exportedByUserId           String?
-  exportedBy                 User?        @relation("UserExports", fields: [exportedByUserId], references: [id])
+  exportedBy                 User?        @relation("UserExports", fields: [exportedByUserId], references: [id], onDelete: SetNull)
   exportType                 ExportType
   exportedAt                 DateTime     @default(now())
   exportPackageId            String?
@@ -266,18 +338,15 @@ model ExportEvent {
 }
 
 // ─── StripeEvent ──────────────────────────────────────────────────────────────
-// Idempotency log for Stripe webhook events.
-// Prevents duplicate processing when Stripe retries delivery.
-// Never stores secrets, tokens, or full webhook payloads.
 
 model StripeEvent {
   id            String            @id @default(cuid())
-  stripeEventId String            @unique  // Stripe evt_xxx — idempotency key
-  eventType     String            // e.g. "invoice.paid"
+  stripeEventId String            @unique
+  eventType     String
   status        StripeEventStatus @default(RECEIVED)
   receivedAt    DateTime          @default(now())
   processedAt   DateTime?
-  errorMessage  String?           // short, sanitized — no secrets or payloads
+  errorMessage  String?
   retryCount    Int               @default(0)
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt

@@ -33,20 +33,20 @@ export async function POST(req: NextRequest) {
     if (existing)
       return NextResponse.json({ error: 'You are already a member of this workspace' }, { status: 400 })
 
-    // Add to workspace
-    await prisma.workspaceMember.create({
-      data: {
-        workspaceId: invite.workspaceId,
-        userId:      user.id,
-        role:        invite.role,
-      },
-    })
-
-    // Mark invite accepted
-    await prisma.workspaceInvite.update({
-      where: { id: invite.id },
-      data:  { status: 'ACCEPTED' },
-    })
+    // Add member + mark invite accepted atomically (prevents double-accept race)
+    await prisma.$transaction([
+      prisma.workspaceMember.create({
+        data: {
+          workspaceId: invite.workspaceId,
+          userId:      user.id,
+          role:        invite.role,
+        },
+      }),
+      prisma.workspaceInvite.update({
+        where: { id: invite.id },
+        data:  { status: 'ACCEPTED', acceptedAt: new Date(), acceptedByUserId: user.id },
+      }),
+    ])
 
     return NextResponse.json({ success: true, workspaceId: invite.workspaceId })
   } catch (err: any) {

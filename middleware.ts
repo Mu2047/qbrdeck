@@ -2,6 +2,7 @@ import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
 
 const isProtectedRoute = createRouteMatcher([
   '/dashboard(.*)',
+  '/api/((?!webhooks).*)',   // protect all API routes EXCEPT webhooks (Stripe uses signature auth)
 ])
 
 export default clerkMiddleware((auth, req) => {

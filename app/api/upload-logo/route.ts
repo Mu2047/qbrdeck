@@ -15,6 +15,14 @@ export async function POST(req: NextRequest) {
   if (!can.manageSettings(membership.role))
     return NextResponse.json({ error: 'Only the workspace owner can update the logo' }, { status: 403 })
 
+  // Plan gating: custom branding is a Growth/Agency feature
+  const plan = membership.subscription?.plan ?? 'FREE'
+  if (plan !== 'GROWTH' && plan !== 'AGENCY')
+    return NextResponse.json(
+      { error: 'Custom branding is available on Growth and Agency plans' },
+      { status: 403 }
+    )
+
   const form = await req.formData()
   const file = form.get('logo') as File
   if (!file) return NextResponse.json({ error: 'No file' }, { status: 400 })

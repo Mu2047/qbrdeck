@@ -42,25 +42,30 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
   })
 
   if (!user) {
-    const { currentUser } = await import('@clerk/nextjs/server')
-    const clerkUser = await currentUser()
-    if (!clerkUser) return null
+  const { currentUser } = await import('@clerk/nextjs/server')
+  const clerkUser = await currentUser()
+  if (!clerkUser) return null
 
-    user = await prisma.user.create({
-      data: {
-        clerkId,
-        email: clerkUser.emailAddresses[0]?.emailAddress ?? '',
-        name:  `${clerkUser.firstName ?? ''} ${clerkUser.lastName ?? ''}`.trim() || null,
+  const email = clerkUser.emailAddresses[0]?.emailAddress
+  if (!email) return null   // never upsert on an empty email
+
+  user = await prisma.user.upsert({
+    where: { email },                 // match the existing row by its unique email
+    update: { clerkId },              // reconcile: point the record at the current Clerk identity
+    create: {
+      clerkId,
+      email,
+      name: `${clerkUser.firstName ?? ''} ${clerkUser.lastName ?? ''}`.trim() || null,
+    },
+    include: {
+      memberships: {
+        include: { workspace: { include: { subscription: true } } },
+        orderBy: { joinedAt: 'asc' },
+        take: 1,
       },
-      include: {
-        memberships: {
-          include: { workspace: { include: { subscription: true } } },
-          orderBy: { joinedAt: 'asc' },
-          take: 1,
-        },
-      },
-    })
-  }
+    },
+  })
+}
 
   if (!user) return null
 

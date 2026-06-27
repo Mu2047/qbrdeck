@@ -16,8 +16,8 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const client = await prisma.client.findFirst({
-      where: { id: params.id, workspaceId: membership.workspaceId },
-      include: { qbrs: { orderBy: { createdAt: 'desc' } } },
+      where: { id: params.id, workspaceId: membership.workspaceId, deletedAt: null },
+      include: { qbrs: { where: { deletedAt: null }, orderBy: { createdAt: 'desc' } } },
     })
     if (!client) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
@@ -43,7 +43,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const client = await prisma.client.findFirst({
-      where: { id: params.id, workspaceId: membership.workspaceId },
+      where: { id: params.id, workspaceId: membership.workspaceId, deletedAt: null },
     })
     if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
 
@@ -81,11 +81,21 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const client = await prisma.client.findFirst({
-      where: { id: params.id, workspaceId: membership.workspaceId },
+      where: { id: params.id, workspaceId: membership.workspaceId, deletedAt: null },
     })
     if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
 
-    await prisma.client.delete({ where: { id: params.id } })
+    // Soft delete (archive) — preserves QBRs and ExportEvent audit history.
+    await prisma.client.update({
+      where: { id: params.id },
+      data:  { deletedAt: new Date() },
+    })
+
+    // Archive the client's QBRs too so they leave active lists.
+    await prisma.qBR.updateMany({
+      where: { clientId: params.id, workspaceId: membership.workspaceId, deletedAt: null },
+      data:  { deletedAt: new Date() },
+    })
 
     return NextResponse.json({ success: true })
   } catch (err: any) {

@@ -16,12 +16,11 @@ export async function GET(req: NextRequest, { params }: { params: { qbrId: strin
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const qbr = await prisma.qBR.findFirst({
-      where: { id: params.qbrId },
+      where: { id: params.qbrId, workspaceId: membership.workspaceId, deletedAt: null },
       include: { client: true },
     })
 
-    if (!qbr || qbr.client.workspaceId !== membership.workspaceId)
-      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!qbr) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     return NextResponse.json(qbr)
   } catch (err: any) {
@@ -41,12 +40,11 @@ export async function PATCH(req: NextRequest, { params }: { params: { qbrId: str
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
     const qbr = await prisma.qBR.findFirst({
-      where: { id: params.qbrId },
+      where: { id: params.qbrId, workspaceId: membership.workspaceId, deletedAt: null },
       include: { client: true },
     })
 
-    if (!qbr || qbr.client.workspaceId !== membership.workspaceId)
-      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (!qbr) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const { slides } = await req.json()
 

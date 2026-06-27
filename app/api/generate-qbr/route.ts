@@ -38,8 +38,8 @@ export async function POST(req: NextRequest) {
     const data = schema.parse(body)
  
     const client = await prisma.client.findFirst({
-      where: { id: data.clientId, workspaceId: membership.workspaceId },
-    })
+  where: { id: data.clientId, workspaceId: membership.workspaceId, deletedAt: null },
+})
     if (!client) return NextResponse.json({ error: 'Client not found' }, { status: 404 })
  
     // ── Limit enforcement ────────────────────────────────────────────────────
@@ -142,8 +142,17 @@ export async function POST(req: NextRequest) {
     // ── Save QBR ──────────────────────────────────────────────────────────────
     const qbr = await prisma.qBR.create({
       data: {
-        clientId:             client.id,
-        createdById:          membership.userId,
+        client: {
+          connect: {
+            id_workspaceId: { id: client.id, workspaceId: client.workspaceId },
+          },
+        },
+        workspace: {
+          connect: { id: client.workspaceId },
+        },
+        createdBy: {
+          connect: { id: membership.userId },
+        },
         quarter:              data.quarter,
         year:                 data.year,
         status:               'GENERATED',

@@ -2,7 +2,7 @@ import { auth } from '@clerk/nextjs/server'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceMembership } from '@/lib/workspace'
-import { can, canInviteMoreMembers, SEAT_LIMITS } from '@/lib/permissions'
+import { can, canInviteMoreMembers, canGrantRole, SEAT_LIMITS } from '@/lib/permissions'
 import { TeamRole } from '@prisma/client'
 import { Resend } from 'resend'
 
@@ -39,6 +39,15 @@ export async function POST(req: NextRequest) {
 
     const { email, role } = await req.json()
     if (!email || !role) return NextResponse.json({ error: 'Email and role required' }, { status: 400 })
+
+    // Validate role is a real enum value
+    const VALID_ROLES: TeamRole[] = ['OWNER', 'ADMIN', 'MEMBER', 'VIEWER']
+    if (!VALID_ROLES.includes(role as TeamRole))
+      return NextResponse.json({ error: 'Invalid role' }, { status: 400 })
+
+    // P1: enforce that the inviter may grant THIS role (prevents privilege escalation)
+    if (!canGrantRole(membership.role, role as TeamRole))
+      return NextResponse.json({ error: 'You cannot grant a role equal to or above your own' }, { status: 403 })
 
     // Check if already a member
     const existingUser = await prisma.user.findUnique({ where: { email } })

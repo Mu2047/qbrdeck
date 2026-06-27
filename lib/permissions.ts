@@ -18,7 +18,7 @@ export const can = {
   manageSettings:    (role: TeamRole) => role === 'OWNER',
 
   // Team
-  inviteMembers:     (role: TeamRole) => hasRole(role, 'OWNER'),
+  inviteMembers:     (role: TeamRole) => hasRole(role, 'ADMIN'),   // ADMIN+ may invite
   removeMembers:     (role: TeamRole) => role === 'OWNER',
   changeRoles:       (role: TeamRole) => role === 'OWNER',
 
@@ -34,7 +34,10 @@ export const can = {
   viewQBR:           (role: TeamRole) => hasRole(role, 'VIEWER'),
   editQBRReminders:  (role: TeamRole) => hasRole(role, 'ADMIN'),
 }
-
+export function canGrantRole(inviterRole: TeamRole, targetRole: TeamRole): boolean {
+  if (targetRole === 'OWNER') return inviterRole === 'OWNER'
+  return hasRole(inviterRole, 'ADMIN')
+}
 // Plan seat limits
 export const SEAT_LIMITS: Record<string, number> = {
   FREE:   1,

@@ -21,6 +21,16 @@ export async function POST(req: NextRequest) {
 
     const { priceId } = await req.json()
 
+    // Whitelist: only the three real plan prices may be checked out
+    const ALLOWED_PRICES = [
+      process.env.STRIPE_PRICE_SOLO,
+      process.env.STRIPE_PRICE_GROWTH,
+      process.env.STRIPE_PRICE_AGENCY,
+    ].filter(Boolean)
+
+    if (!priceId || !ALLOWED_PRICES.includes(priceId))
+      return NextResponse.json({ error: 'Invalid plan selected' }, { status: 400 })
+
     const customerId = await createOrRetrieveCustomer({
       workspaceId: membership.workspaceId,
       email: user.email,

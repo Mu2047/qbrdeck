@@ -24,12 +24,11 @@ export async function POST(req: NextRequest) {
     const { qbrId } = await req.json()
 
     const qbr = await prisma.qBR.findFirst({
-      where: { id: qbrId },
+      where: { id: qbrId, workspaceId: membership.workspaceId, deletedAt: null },
       include: { client: true },
     })
 
-    if (!qbr || qbr.client.workspaceId !== membership.workspaceId)
-      return NextResponse.json({ error: 'QBR not found' }, { status: 404 })
+    if (!qbr) return NextResponse.json({ error: 'QBR not found' }, { status: 404 })
 
     if (!qbr.slides)
       return NextResponse.json({ error: 'QBR has no generated slides' }, { status: 400 })

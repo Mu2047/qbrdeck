@@ -15,26 +15,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { notFound } from 'next/navigation'
-import { prisma } from '@/lib/prisma'
 import { resolveBranding, buildFooterText } from '@/lib/branding'
 import { resolveSlides, buildPlaceholderContext } from '@/lib/placeholders'
 import { resolveHealthScore } from '@/lib/health-score'
+import { resolveSharedQbr } from '@/lib/share-links'
 
 export default async function PortalPage({ params }: { params: { token: string } }) {
 
   // ── Load QBR via share token ────────────────────────────────────────────────
-  const qbr = await prisma.qBR.findUnique({
-    where:   { shareToken: params.token },
-    include: {
-      client: {
-        include: {
-          workspace: {
-            include: { subscription: true },
-          },
-        },
-      },
-    },
-  })
+  const qbr = await resolveSharedQbr(params.token)
 
   if (!qbr || !qbr.slides) notFound()
 
