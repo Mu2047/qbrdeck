@@ -1,31 +1,8 @@
-// app/api/webhooks/stripe/route.ts
-// ─────────────────────────────────────────────────────────────────────────────
-// Hardened Stripe webhook handler.
-//
-// SECURITY:
-//   - Signature verified before any processing
-//   - No secrets, tokens, or payloads logged
-//   - Plan mapped server-side from price ID — never trusted from client
-//
-// IDEMPOTENCY:
-//   - Every event checked against StripeEvent table before processing
-//   - Duplicate events return 200 without reapplying changes
-//   - Failed events are safely retryable
-//
-// GRACE PERIOD:
-//   - pastDueAt set only on FIRST payment failure — not reset on Stripe retries
-//   - graceEndsAt = pastDueAt + PAYMENT_GRACE_PERIOD_DAYS
-//   - Both cleared on payment recovery
-//   - Grace enforcement handled in lib/subscription-access.ts
-// ─────────────────────────────────────────────────────────────────────────────
-
 import { NextRequest, NextResponse } from 'next/server'
 import { stripe } from '@/lib/stripe'
 import { prisma } from '@/lib/prisma'
 import { PAYMENT_GRACE_PERIOD_DAYS } from '@/lib/subscription-access'
 import type Stripe from 'stripe'
-
-// ── Plan mapping — server-side only ──────────────────────────────────────────
 
 function getPlanFromPriceId(priceId?: string): 'FREE' | 'SOLO' | 'GROWTH' | 'AGENCY' {
   if (!priceId) return 'FREE'
@@ -35,7 +12,21 @@ function getPlanFromPriceId(priceId?: string): 'FREE' | 'SOLO' | 'GROWTH' | 'AGE
   return 'FREE'
 }
 
-// ── Main handler ──────────────────────────────────────────────────────────────
+// Resolves which workspace a Stripe event belongs to. Tries the DB join
+// first; falls back to the Stripe customer's own metadata if the local
+// row is missing or its stripeCustomerId has drifted.
+async function resolveWorkspaceId(customerId: string): Promise<string | null> {
+  const existing = await prisma.subscription.findUnique({
+    where: { stripeCustomerId: customerId },
+    select: { workspaceId: true },
+  })
+  if (existing) return existing.workspaceId
+
+  const customer = await stripe.customers.retrieve(customerId)
+  if (customer.deleted) return null
+
+  return (customer as Stripe.Customer).metadata?.workspaceId ?? null
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.text()
@@ -46,7 +37,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing signature' }, { status: 400 })
   }
 
-  // ── 1. Verify signature before anything else ──────────────────────────────
   let event: Stripe.Event
   try {
     event = stripe.webhooks.constructEvent(body, sig, process.env.STRIPE_WEBHOOK_SECRET!)
@@ -57,202 +47,140 @@ export async function POST(req: NextRequest) {
 
   const { id: stripeEventId, type: eventType } = event
 
-  // ── 2. Idempotency check ──────────────────────────────────────────────────
-  const existingEvent = await prisma.stripeEvent.findUnique({
-    where: { stripeEventId },
-  })
+  const existingEvent = await prisma.stripeEvent.findUnique({ where: { stripeEventId } })
 
   if (existingEvent) {
-    if (existingEvent.status === 'PROCESSED') {
-      // Already handled — return success without reapplying
-      return NextResponse.json({ received: true, idempotent: true })
-    }
-    if (existingEvent.status === 'PROCESSING') {
-      // In-flight — another instance is handling it
-      return NextResponse.json({ received: true, processing: true })
-    }
-    // FAILED or RECEIVED — allow retry
+    if (existingEvent.status === 'PROCESSED') return NextResponse.json({ received: true, idempotent: true })
+    if (existingEvent.status === 'PROCESSING') return NextResponse.json({ received: true, processing: true })
   }
 
-  // ── 3. Record event as PROCESSING ────────────────────────────────────────
   await prisma.stripeEvent.upsert({
     where:  { stripeEventId },
-    update: {
-      status:     'PROCESSING',
-      retryCount: { increment: existingEvent ? 1 : 0 },
-      updatedAt:  new Date(),
-    },
-    create: {
-      stripeEventId,
-      eventType,
-      status:    'PROCESSING',
-      receivedAt: new Date(),
-    },
+    update: { status: 'PROCESSING', retryCount: { increment: existingEvent ? 1 : 0 }, updatedAt: new Date() },
+    create: { stripeEventId, eventType, status: 'PROCESSING', receivedAt: new Date() },
   })
 
-  // ── 4. Process event ──────────────────────────────────────────────────────
   try {
     await handleEvent(event)
-
-    // Mark as PROCESSED
     await prisma.stripeEvent.update({
       where: { stripeEventId },
-      data: {
-        status:      'PROCESSED',
-        processedAt: new Date(),
-        errorMessage: null,
-      },
+      data:  { status: 'PROCESSED', processedAt: new Date(), errorMessage: null },
     })
-
     return NextResponse.json({ received: true })
-
   } catch (err: any) {
-    // Mark as FAILED — safe to retry
-    const safeMessage = typeof err.message === 'string'
-      ? err.message.slice(0, 500)  // truncate, never expose full stack or secrets
-      : 'Unknown error'
-
+    const safeMessage = typeof err.message === 'string' ? err.message.slice(0, 500) : 'Unknown error'
     console.error(`[webhook] Handler failed for ${eventType} (${stripeEventId}):`, safeMessage)
-
-    await prisma.stripeEvent.update({
-      where: { stripeEventId },
-      data: {
-        status:       'FAILED',
-        errorMessage: safeMessage,
-      },
-    })
-
-    // Return 500 so Stripe retries
+    await prisma.stripeEvent.update({ where: { stripeEventId }, data: { status: 'FAILED', errorMessage: safeMessage } })
     return NextResponse.json({ error: 'Handler failed' }, { status: 500 })
   }
 }
 
-// ── Event handlers ────────────────────────────────────────────────────────────
-
 async function handleEvent(event: Stripe.Event): Promise<void> {
   switch (event.type) {
-
     case 'checkout.session.completed':
       await handleCheckoutCompleted(event.data.object as Stripe.Checkout.Session)
       break
-
     case 'customer.subscription.created':
     case 'customer.subscription.updated':
       await handleSubscriptionUpdated(event.data.object as Stripe.Subscription)
       break
-
     case 'customer.subscription.deleted':
       await handleSubscriptionDeleted(event.data.object as Stripe.Subscription)
       break
-
     case 'invoice.paid':
       await handleInvoicePaid(event.data.object as Stripe.Invoice)
       break
-
     case 'invoice.payment_failed':
       await handleInvoicePaymentFailed(event.data.object as Stripe.Invoice)
       break
-
     default:
-      // Unhandled event types — not an error, just log and acknowledge
       console.log(`[webhook] Unhandled event type: ${event.type}`)
   }
 }
 
-// ── checkout.session.completed ────────────────────────────────────────────────
-
 async function handleCheckoutCompleted(session: Stripe.Checkout.Session): Promise<void> {
   const customerId     = session.customer as string
   const subscriptionId = session.subscription as string
-  const workspaceId    = session.metadata?.workspaceId
 
   if (!subscriptionId) {
     console.warn('[webhook] checkout.session.completed: no subscriptionId')
     return
   }
 
-  // Retrieve full subscription from Stripe — never trust client metadata for plan
   const sub     = await stripe.subscriptions.retrieve(subscriptionId)
   const priceId = sub.items.data[0]?.price.id
   const plan    = getPlanFromPriceId(priceId)
 
   const subscriptionData = {
-    stripeCustomerId:        customerId,
-    stripeSubscriptionId:    subscriptionId,
-    stripePriceId:           priceId,
+    stripeCustomerId:         customerId,
+    stripeSubscriptionId:     subscriptionId,
+    stripePriceId:            priceId,
     plan,
-    status:                  sub.status,
-    stripeStatus:            sub.status,
+    status:                   sub.status,
+    stripeStatus:             sub.status,
     stripeCurrentPeriodStart: new Date(sub.current_period_start * 1000),
     stripeCurrentPeriodEnd:   new Date(sub.current_period_end   * 1000),
     currentPeriodEnd:         new Date(sub.current_period_end   * 1000),
     periodStart:              new Date(sub.current_period_start * 1000),
     cancelAtPeriodEnd:        sub.cancel_at_period_end,
-    // Reset usage counters for new subscription
     qbrCount:    0,
     exportCount: 0,
-    // Clear any stale payment-failure state
     pastDueAt:   null,
     graceEndsAt: null,
   }
 
-  if (workspaceId) {
-    await prisma.subscription.upsert({
-      where:  { workspaceId },
-      update: subscriptionData,
-      create: { workspaceId, ...subscriptionData, exportedQbrIds: '[]' },
-    })
-  } else {
-    // Fallback — look up by customer ID
-    const existing = await prisma.subscription.findUnique({
-      where: { stripeCustomerId: customerId },
-    })
-    if (existing) {
-      await prisma.subscription.update({
-        where: { stripeCustomerId: customerId },
-        data:  subscriptionData,
-      })
-    } else {
-      console.error('[webhook] checkout.session.completed: no workspace found for customer', customerId)
-    }
+  const workspaceId = session.metadata?.workspaceId ?? await resolveWorkspaceId(customerId)
+
+  if (!workspaceId) {
+    throw new Error(`checkout.session.completed: unable to resolve workspace for customer ${customerId}`)
   }
+
+  await prisma.subscription.upsert({
+    where:  { workspaceId },
+    update: subscriptionData,
+    create: { workspaceId, ...subscriptionData, exportedQbrIds: '[]' },
+  })
 }
 
-// ── customer.subscription.updated / created ───────────────────────────────────
-
 async function handleSubscriptionUpdated(sub: Stripe.Subscription): Promise<void> {
-  const customerId = sub.customer as string
-  const priceId    = sub.items.data[0]?.price.id
-  const plan       = getPlanFromPriceId(priceId)
-
-  // Only clear pastDueAt/graceEndsAt if Stripe status indicates recovery
+  const customerId  = sub.customer as string
+  const priceId     = sub.items.data[0]?.price.id
+  const plan        = getPlanFromPriceId(priceId)
   const isRecovered = sub.status === 'active' || sub.status === 'trialing'
 
+  const workspaceId = await resolveWorkspaceId(customerId)
+  if (!workspaceId) {
+    throw new Error(`customer.subscription.updated: unable to resolve workspace for customer ${customerId}`)
+  }
+
   await prisma.subscription.update({
-    where: { stripeCustomerId: customerId },
+    where: { workspaceId },
     data: {
       plan,
-      status:                  sub.status,
-      stripeStatus:            sub.status,
-      stripePriceId:           priceId,
-      stripeSubscriptionId:    sub.id,
+      status:                   sub.status,
+      stripeStatus:             sub.status,
+      stripePriceId:            priceId,
+      stripeSubscriptionId:     sub.id,
+      stripeCustomerId:         customerId,
       stripeCurrentPeriodStart: new Date(sub.current_period_start * 1000),
       stripeCurrentPeriodEnd:   new Date(sub.current_period_end   * 1000),
       currentPeriodEnd:         new Date(sub.current_period_end   * 1000),
       cancelAtPeriodEnd:        sub.cancel_at_period_end,
-      // Only clear payment-failure state on confirmed recovery
       ...(isRecovered ? { pastDueAt: null, graceEndsAt: null } : {}),
     },
   })
 }
 
-// ── customer.subscription.deleted ────────────────────────────────────────────
-
 async function handleSubscriptionDeleted(sub: Stripe.Subscription): Promise<void> {
   const customerId = sub.customer as string
 
+  const workspaceId = await resolveWorkspaceId(customerId)
+  if (!workspaceId) {
+    throw new Error(`customer.subscription.deleted: unable to resolve workspace for customer ${customerId}`)
+  }
+
   await prisma.subscription.update({
-    where: { stripeCustomerId: customerId },
+    where: { workspaceId },
     data: {
       plan:                 'FREE',
       status:               'canceled',
@@ -260,66 +188,55 @@ async function handleSubscriptionDeleted(sub: Stripe.Subscription): Promise<void
       stripeSubscriptionId: null,
       stripePriceId:        null,
       cancelAtPeriodEnd:    false,
-      // Clear grace state — no active subscription, no grace period
       pastDueAt:            null,
       graceEndsAt:          null,
-      // Preserve: workspaceId, stripeCustomerId, qbrCount, exportCount,
-      //           exportedQbrIds, clients, QBRs, ExportEvents, members
     },
   })
-  // Data (clients, QBRs, ExportEvents, team) is preserved — cascade is on
-  // workspace deletion only, not subscription status change
 }
-
-// ── invoice.paid ──────────────────────────────────────────────────────────────
 
 async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   const customerId     = invoice.customer as string
   const subscriptionId = invoice.subscription as string
 
-  if (!subscriptionId) return  // one-time payment, not a subscription invoice
+  if (!subscriptionId) return
 
-  // Retrieve current subscription state from Stripe
   const sub = await stripe.subscriptions.retrieve(subscriptionId)
 
+  const workspaceId = await resolveWorkspaceId(customerId)
+  if (!workspaceId) {
+    throw new Error(`invoice.paid: unable to resolve workspace for customer ${customerId}`)
+  }
+
   const existing = await prisma.subscription.findUnique({
-    where: { stripeCustomerId: customerId },
+    where:  { workspaceId },
     select: { periodStart: true, stripeCurrentPeriodStart: true },
   })
 
   const newPeriodStart = new Date(sub.current_period_start * 1000)
   const oldPeriodStart = existing?.stripeCurrentPeriodStart ?? existing?.periodStart
-
-  // Only reset usage counters when billing period actually changed
-  // Prevents resetting counters on duplicate invoice.paid events
-  const periodChanged = !oldPeriodStart ||
-    newPeriodStart.getTime() !== oldPeriodStart.getTime()
+  const periodChanged  = !oldPeriodStart || newPeriodStart.getTime() !== oldPeriodStart.getTime()
 
   await prisma.subscription.update({
-    where: { stripeCustomerId: customerId },
+    where: { workspaceId },
     data: {
-      status:                  sub.status,
-      stripeStatus:            sub.status,
+      stripeCustomerId:         customerId,
+      status:                   sub.status,
+      stripeStatus:             sub.status,
       stripeCurrentPeriodStart: newPeriodStart,
       stripeCurrentPeriodEnd:   new Date(sub.current_period_end * 1000),
       currentPeriodEnd:         new Date(sub.current_period_end * 1000),
       cancelAtPeriodEnd:        sub.cancel_at_period_end,
-      // Clear payment-failure state on successful payment
       pastDueAt:   null,
       graceEndsAt: null,
-      // Reset usage counters only for new billing period
       ...(periodChanged ? {
-        qbrCount:      0,
-        exportCount:   0,
+        qbrCount:       0,
+        exportCount:    0,
         exportedQbrIds: '[]',
-        periodStart:   newPeriodStart,
+        periodStart:    newPeriodStart,
       } : {}),
     },
   })
-  // ExportEvent records are preserved — only counters reset
 }
-
-// ── invoice.payment_failed ────────────────────────────────────────────────────
 
 async function handleInvoicePaymentFailed(invoice: Stripe.Invoice): Promise<void> {
   const customerId     = invoice.customer as string
@@ -329,41 +246,30 @@ async function handleInvoicePaymentFailed(invoice: Stripe.Invoice): Promise<void
 
   const sub = await stripe.subscriptions.retrieve(subscriptionId)
 
+  const workspaceId = await resolveWorkspaceId(customerId)
+  if (!workspaceId) {
+    throw new Error(`invoice.payment_failed: unable to resolve workspace for customer ${customerId}`)
+  }
+
   const existing = await prisma.subscription.findUnique({
-    where:  { stripeCustomerId: customerId },
-    select: { pastDueAt: true, graceEndsAt: true, workspaceId: true },
+    where:  { workspaceId },
+    select: { pastDueAt: true },
   })
 
   const now = new Date()
-
-  // Only set pastDueAt/graceEndsAt on FIRST failure — not on Stripe retries
-  // This prevents the grace period from being extended by each retry
   const graceUpdate = existing?.pastDueAt
-    ? {}  // Already in grace period — preserve original timestamps
-    : {
-        pastDueAt:   now,
-        graceEndsAt: new Date(now.getTime() + PAYMENT_GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000),
-      }
+    ? {}
+    : { pastDueAt: now, graceEndsAt: new Date(now.getTime() + PAYMENT_GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000) }
 
   await prisma.subscription.update({
-    where: { stripeCustomerId: customerId },
-    data: {
-      status:       sub.status,
-      stripeStatus: sub.status,
-      ...graceUpdate,
-    },
+    where: { workspaceId },
+    data: { status: sub.status, stripeStatus: sub.status, ...graceUpdate },
   })
 
-  // Send payment failed email — after DB update so we don't email on DB failure
-  if (existing?.workspaceId) {
-    await sendPaymentFailedEmail(existing.workspaceId).catch(err => {
-      // Log but don't throw — email failure should not fail the webhook
-      console.error('[webhook] Payment failed email error:', err?.message)
-    })
-  }
+  await sendPaymentFailedEmail(workspaceId).catch(err => {
+    console.error('[webhook] Payment failed email error:', err?.message)
+  })
 }
-
-// ── Payment failed email ──────────────────────────────────────────────────────
 
 async function sendPaymentFailedEmail(workspaceId: string): Promise<void> {
   const workspace = await prisma.workspace.findUnique({
