@@ -1,8 +1,0 @@
-{
-  "/api/qbrs/[qbrId]/send/route": "app/api/qbrs/[qbrId]/send/route.js",
-  "/portal/[token]/page": "app/portal/[token]/page.js",
-  "/(app)/dashboard/analytics/page": "app/(app)/dashboard/analytics/page.js",
-  "/(app)/dashboard/clients/[id]/qbr/[qbrId]/page": "app/(app)/dashboard/clients/[id]/qbr/[qbrId]/page.js",
-  "/(app)/dashboard/clients/page": "app/(app)/dashboard/clients/page.js",
-  "/(app)/dashboard/clients/[id]/page": "app/(app)/dashboard/clients/[id]/page.js"
-}
