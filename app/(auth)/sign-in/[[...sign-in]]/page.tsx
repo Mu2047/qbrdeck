@@ -1,38 +1,24 @@
 'use client'
 
-import { SignInButton, useUser } from '@clerk/nextjs'
+import { SignInButton } from '@clerk/nextjs'
 import Link from 'next/link'
-import { useEffect } from 'react'
 import { useSearchParams } from 'next/navigation'
 
 function getSafeRedirect(raw: string | null) {
   if (!raw) return '/dashboard'
-
-  if (raw.startsWith('/') && !raw.startsWith('//')) {
-    return raw
-  }
-
+  if (raw.startsWith('/') && !raw.startsWith('//')) return raw
   try {
     const url = new URL(raw)
     if (url.origin === 'https://qbrdeck.misecuretechsolutions.com') {
       return `${url.pathname}${url.search}${url.hash}`
     }
-  } catch {
-    // ignore invalid URL
-  }
-
+  } catch {}
   return '/dashboard'
 }
 
 export default function SignInPage() {
-  const { isLoaded, isSignedIn } = useUser()
   const searchParams = useSearchParams()
   const redirectUrl = getSafeRedirect(searchParams.get('redirect_url'))
-
-  useEffect(() => {
-    if (!isLoaded || !isSignedIn) return
-    window.location.href = redirectUrl
-  }, [isLoaded, isSignedIn, redirectUrl])
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-gray-50 px-6">
@@ -65,7 +51,7 @@ export default function SignInPage() {
         </p>
 
         <p className="mt-4 text-xs text-slate-400">
-          If you already signed in and are still on this page, click Continue to dashboard.
+          After signing in, click Continue to dashboard.
         </p>
       </div>
     </main>
