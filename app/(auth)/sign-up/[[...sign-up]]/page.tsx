@@ -1,9 +1,40 @@
 'use client'
 
-import { SignUpButton } from '@clerk/nextjs'
+import { SignUpButton, useUser } from '@clerk/nextjs'
 import Link from 'next/link'
+import { useEffect } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+
+function getSafeRedirect(raw: string | null) {
+  if (!raw) return '/dashboard'
+
+  if (raw.startsWith('/') && !raw.startsWith('//')) {
+    return raw
+  }
+
+  try {
+    const url = new URL(raw)
+    if (url.origin === 'https://qbrdeck.misecuretechsolutions.com') {
+      return `${url.pathname}${url.search}${url.hash}`
+    }
+  } catch {
+    // ignore invalid URL
+  }
+
+  return '/dashboard'
+}
 
 export default function SignUpPage() {
+  const { isLoaded, isSignedIn } = useUser()
+  const router = useRouter()
+  const searchParams = useSearchParams()
+
+  useEffect(() => {
+    if (!isLoaded || !isSignedIn) return
+    const redirectUrl = getSafeRedirect(searchParams.get('redirect_url'))
+    router.replace(redirectUrl)
+  }, [isLoaded, isSignedIn, router, searchParams])
+
   return (
     <main className="min-h-screen flex items-center justify-center bg-gray-50 px-6">
       <div className="w-full max-w-md rounded-2xl border bg-white p-8 shadow-sm text-center">
