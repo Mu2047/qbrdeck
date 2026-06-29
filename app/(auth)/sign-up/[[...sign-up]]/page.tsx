@@ -3,7 +3,7 @@
 import { SignUpButton, useUser } from '@clerk/nextjs'
 import Link from 'next/link'
 import { useEffect } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
 
 function getSafeRedirect(raw: string | null) {
   if (!raw) return '/dashboard'
@@ -26,14 +26,13 @@ function getSafeRedirect(raw: string | null) {
 
 export default function SignUpPage() {
   const { isLoaded, isSignedIn } = useUser()
-  const router = useRouter()
   const searchParams = useSearchParams()
+  const redirectUrl = getSafeRedirect(searchParams.get('redirect_url'))
 
   useEffect(() => {
     if (!isLoaded || !isSignedIn) return
-    const redirectUrl = getSafeRedirect(searchParams.get('redirect_url'))
-    router.replace(redirectUrl)
-  }, [isLoaded, isSignedIn, router, searchParams])
+    window.location.href = redirectUrl
+  }, [isLoaded, isSignedIn, redirectUrl])
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-gray-50 px-6">
@@ -51,11 +50,22 @@ export default function SignUpPage() {
           </SignUpButton>
         </div>
 
+        <Link
+          href={redirectUrl}
+          className="mt-3 block w-full rounded-lg border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+        >
+          Continue to dashboard
+        </Link>
+
         <p className="mt-6 text-sm text-slate-600">
           Already have an account?{' '}
           <Link href="/sign-in" className="font-semibold text-slate-950 underline">
             Sign in
           </Link>
+        </p>
+
+        <p className="mt-4 text-xs text-slate-400">
+          If you already signed up and are still on this page, click Continue to dashboard.
         </p>
       </div>
     </main>
