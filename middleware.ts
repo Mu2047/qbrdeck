@@ -1,7 +1,7 @@
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
 
 const isProtectedPage = createRouteMatcher(['/dashboard(.*)'])
-const isProtectedApi = createRouteMatcher(['/api/((?!webhooks).*)'])
+const isProtectedApi = createRouteMatcher(['/api/((?!webhooks|debug-auth).*)'])
 
 export default clerkMiddleware(
   (auth, req) => {
