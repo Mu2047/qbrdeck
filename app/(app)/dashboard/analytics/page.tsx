@@ -360,7 +360,7 @@ export default function AnalyticsPage() {
             <div className="card p-5">
               <div className="flex items-center gap-2 mb-4">
                 <BarChart2 size={14} className="text-gray-400" />
-                <h2 className="font-semibold text-navy-800 text-sm">QBRs generated</h2>
+                <h2 className="font-semibold text-navy-800 text-sm">QBRs generated (all time)</h2>
                 <span className="ml-auto text-xs text-gray-400">
                   {RANGE_OPTIONS.find(o => o.value === range)?.label ?? 'Last 6 months'}
                 </span>
