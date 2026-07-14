@@ -311,7 +311,7 @@ export default function AnalyticsPage() {
                 color: 'bg-blue-50 text-blue-600',
               },
               {
-                label: 'QBRs generated',
+                label: 'QBRs generated (all time)',
                 value: summary.totalQBRs,
                 sub:   undefined,
                 icon:  FileText,
