@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
 
     // Send invite email
     await resend.emails.send({
-      from:    'noreply@misecuretechsolutions.com',
+      from: 'QBR Deck <noreply@misecuretechsolutions.com>',
       to:      email,
       subject: `You're invited to join ${workspace?.name ?? 'QBR Deck'}`,
       html: `

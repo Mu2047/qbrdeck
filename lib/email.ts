@@ -18,7 +18,7 @@ export async function sendQBREmail({
   portalUrl: string
 }) {
   await resend.emails.send({
-    from: `${mspName} <noreply@misecuretechsolutions.com>`,
+    from: 'QBR Deck <noreply@misecuretechsolutions.com>',
     to,
     subject: `Your Q${quarter} ${year} Quarterly Business Review — ${clientName}`,
     html: `
