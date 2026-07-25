@@ -3,6 +3,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceMembership } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
+import { resolveBranding, buildFooterText } from '@/lib/branding'
+import { resolveHealthScore } from '@/lib/health-score'
+import { resolveSlides, buildPlaceholderContext } from '@/lib/placeholders'
 
 export async function GET(req: NextRequest, { params }: { params: { qbrId: string } }) {
   try {
@@ -22,7 +25,49 @@ export async function GET(req: NextRequest, { params }: { params: { qbrId: strin
 
     if (!qbr) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    return NextResponse.json(qbr)
+    // ── Workspace + branding — same pattern as export-pdf/export-pptx/portal ───
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: membership.workspaceId },
+    })
+
+    const branding = resolveBranding({
+      plan:          membership.subscription?.plan ?? 'FREE',
+      workspaceName: workspace?.name ?? 'QBR Deck',
+    })
+
+    // ── Health score — same pattern as export-pdf/export-pptx/portal ───────────
+    const healthResult = resolveHealthScore(qbr)
+
+    // ── Footer — same pattern as export-pdf/export-pptx/portal ─────────────────
+    const footerText = buildFooterText({
+      branding,
+      clientName: qbr.client.name,
+      quarter:    qbr.quarter,
+      year:       qbr.year,
+    })
+
+    // ── Resolve placeholders into a display-only copy ───────────────────────────
+    // `qbr.slides` (below, via the spread) stays the raw, unresolved stored value —
+    // unchanged in meaning and content. `resolvedSlides` is a new, additional field
+    // for display only; nothing is written back to the database here.
+    const placeholderCtx = buildPlaceholderContext({
+      clientName:     qbr.client.name,
+      clientIndustry: qbr.client.industry,
+      quarter:        qbr.quarter,
+      year:           qbr.year,
+      workspaceName:  workspace?.name ?? 'QBR Deck',
+      mspName:        branding.mspName,
+      healthScore:    healthResult?.score  ?? qbr.healthScore,
+      healthStatus:   healthResult?.status ?? qbr.healthStatus,
+      branding:       { ...branding, footerText },
+      generatedAt:    qbr.createdAt,
+    })
+
+    const resolvedSlides = qbr.slides
+      ? resolveSlides(qbr.slides as Array<Record<string, unknown>>, placeholderCtx)
+      : null
+
+    return NextResponse.json({ ...qbr, resolvedSlides })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }
