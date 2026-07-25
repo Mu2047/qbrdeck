@@ -5,7 +5,7 @@ import { getWorkspaceMembership } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
 import { resolveBranding, buildFooterText } from '@/lib/branding'
 import { resolveHealthScore } from '@/lib/health-score'
-import { resolveSlides, buildPlaceholderContext } from '@/lib/placeholders'
+import { resolveSlides, buildPlaceholderContext, sanitizeResolvedSlides } from '@/lib/placeholders'
 
 export async function GET(req: NextRequest, { params }: { params: { qbrId: string } }) {
   try {
@@ -67,7 +67,19 @@ export async function GET(req: NextRequest, { params }: { params: { qbrId: strin
       ? resolveSlides(qbr.slides as Array<Record<string, unknown>>, placeholderCtx)
       : null
 
-    return NextResponse.json({ ...qbr, resolvedSlides })
+    // ── Defensive guard: sanitize the display copy before it ever leaves the
+    // server. Raw qbr.slides above (and the stored DB value) is untouched —
+    // see lib/placeholders.ts sanitizeResolvedSlides() for what this guards.
+    let safeResolvedSlides = resolvedSlides
+    if (resolvedSlides) {
+      const sanitized = sanitizeResolvedSlides(resolvedSlides)
+      safeResolvedSlides = sanitized.slides
+      if (sanitized.hadUnresolvedTokens) {
+        console.error('[unresolved-placeholder][saved-qbr-get]', qbr.id)
+      }
+    }
+
+    return NextResponse.json({ ...qbr, resolvedSlides: safeResolvedSlides })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }

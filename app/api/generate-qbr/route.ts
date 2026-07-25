@@ -5,7 +5,7 @@ import { getWorkspaceMembership } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
 import { computeHealthScore } from '@/lib/health-score'
 import { resolveBranding, buildFooterText } from '@/lib/branding'
-import { resolveSlides, buildPlaceholderContext } from '@/lib/placeholders'
+import { resolveSlides, buildPlaceholderContext, sanitizeResolvedSlides } from '@/lib/placeholders'
 import { VERSIONS } from '@/lib/versions'
 import { z } from 'zod'
  
@@ -208,6 +208,13 @@ export async function POST(req: NextRequest) {
       placeholderCtx
     )
 
+    // ── Defensive guard: sanitize the preview display copy before it is
+    // returned. Raw qbr.slides (persisted above) is untouched.
+    const { slides: safeResolvedSlides, hadUnresolvedTokens } = sanitizeResolvedSlides(resolvedSlides)
+    if (hadUnresolvedTokens) {
+      console.error('[unresolved-placeholder][generate-qbr]', qbr.id)
+    }
+
     // ── Auto-suggest next QBR date ────────────────────────────────────────────
     const { suggestNextQbrDate } = await import('@/lib/reminder-utils')
     if (!client.nextQbrDate) {
@@ -238,7 +245,7 @@ export async function POST(req: NextRequest) {
  
     return NextResponse.json({
       qbrId:        qbr.id,
-      slides:       resolvedSlides,
+      slides:       safeResolvedSlides,
       clientName:   client.name,
       healthScore:  healthResult.score,
       healthStatus: healthResult.status,

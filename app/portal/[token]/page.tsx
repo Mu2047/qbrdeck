@@ -16,7 +16,7 @@
 
 import { notFound } from 'next/navigation'
 import { resolveBranding, buildFooterText } from '@/lib/branding'
-import { resolveSlides, buildPlaceholderContext } from '@/lib/placeholders'
+import { resolveSlides, buildPlaceholderContext, sanitizeResolvedSlides } from '@/lib/placeholders'
 import { resolveHealthScore } from '@/lib/health-score'
 import { resolveSharedQbr } from '@/lib/share-links'
 import { SlideBody } from '@/components/qbr/SlideBody'
@@ -71,6 +71,15 @@ export default async function PortalPage({ params }: { params: { token: string }
     placeholderCtx
   )
 
+  // ── Defensive guard: sanitize the display copy before rendering. Raw
+  // qbr.slides above is untouched.
+  const { slides: safeSlides, hadUnresolvedTokens } = sanitizeResolvedSlides(
+    slides as Array<Record<string, unknown>>
+  )
+  if (hadUnresolvedTokens) {
+    console.error('[unresolved-placeholder][portal]', qbr.id)
+  }
+
   // ── Page ────────────────────────────────────────────────────────────────────
 
   return (
@@ -92,7 +101,7 @@ export default async function PortalPage({ params }: { params: { token: string }
 
       {/* Slides */}
       <div className="max-w-4xl mx-auto px-6 py-10 space-y-6">
-        {(slides as any[]).map((slide: any, i: number) => (
+        {(safeSlides as any[]).map((slide: any, i: number) => (
           <SlideBody key={i} slide={slide} index={i} healthStatus={resolvedHealthStatus} />
         ))}
 
