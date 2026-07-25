@@ -39,6 +39,7 @@ export default async function PortalPage({ params }: { params: { token: string }
 
   // ── Resolve health score — prefer stored, fall back to recompute ────────────
   const healthResult = resolveHealthScore(qbr)
+  const resolvedHealthStatus = healthResult?.status ?? qbr.healthStatus
 
   // ── Build footer text — same as export routes ───────────────────────────────
   const footerText = buildFooterText({
@@ -57,7 +58,7 @@ export default async function PortalPage({ params }: { params: { token: string }
     workspaceName:  workspace.name,
     mspName:        branding.mspName,
     healthScore:    healthResult?.score  ?? qbr.healthScore,
-    healthStatus:   healthResult?.status ?? qbr.healthStatus,
+    healthStatus:   resolvedHealthStatus,
     branding:       { ...branding, footerText },
     generatedAt:    qbr.createdAt,
   })
@@ -92,7 +93,7 @@ export default async function PortalPage({ params }: { params: { token: string }
       {/* Slides */}
       <div className="max-w-4xl mx-auto px-6 py-10 space-y-6">
         {(slides as any[]).map((slide: any, i: number) => (
-          <SlideBody key={i} slide={slide} index={i} />
+          <SlideBody key={i} slide={slide} index={i} healthStatus={resolvedHealthStatus} />
         ))}
 
         {/* Branding footer — plan-aware, same rules as PDF/PPTX */}
