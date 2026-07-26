@@ -1266,4 +1266,3 @@ None of the above block delivering this report. They are the concrete, named gap
 **File modification confirmation:** the only file created or modified across all three investigation/revision sessions is `QBR_INVESTIGATION.md` (this file). No application code, configuration, environment files, database records, generated QBR records, routes, production data, or existing generated assets were modified. `git status` shows `QBR_INVESTIGATION.md` as the only changed/untracked file.
 
 **Stop condition:** per the handoff's instruction and this session's explicit instruction, this is the investigation report — complete with all 14 required parts (§1‑§11 answered inline via §8, §12 revised minimal fix plan, §13 revised tests, §14 revised risks and rollback). No fixes have been implemented. Do not proceed to implementation until this report is reviewed and approved.
-
