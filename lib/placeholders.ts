@@ -188,3 +188,104 @@ export function buildPlaceholderContext(params: {
       : undefined,
   }
 }
+
+// ── Defensive display-time guard against unresolved placeholders ───────────────
+// resolveSlides() above only ever replaces the fixed set of known placeholder
+// keys in SUPPORTED_PLACEHOLDERS. Any {{...}}-shaped token NOT in that set —
+// e.g. a hallucinated or misspelled AI-authored token — survives resolution
+// completely untouched. sanitizeResolvedSlides() is a last-line-of-defense
+// pass applied to an ALREADY-RESOLVED slide array, immediately before it
+// reaches any user-facing surface (a JSON response, the portal render, PDF,
+// or PPTX generation). It never runs against raw, unresolved slides and never
+// writes anything back to the database — callers are responsible for that.
+//
+// RULES:
+//   - Pure. No logging, no side effects. Callers log (QBR id only) when
+//     hadUnresolvedTokens is true.
+//   - Only sanitizes user-visible text: slide.title, slide.content,
+//     slide.bullets[], metric.label, metric.value, priorities.critical/
+//     important/strategic[], and recommendation.title/why/risk/benefit.
+//   - Never alters slide.type, metric.status, object keys, ids, or any other
+//     structural/metadata field — every object is rebuilt via `...spread`
+//     with only the listed fields overwritten.
+//   - Defensive against malformed optional data (missing or non-object
+//     metrics/priorities/recommendations entries) — never throws.
+
+export const UNRESOLVED_TOKEN_PATTERN = /\{\{[^}]+\}\}/
+
+// Standalone, stateless, pure helper — the "defensive helper accepting
+// unknown": non-string values pass through unchanged; a string containing a
+// surviving token becomes exactly "Content unavailable"; every other string
+// is unchanged.
+function sanitizeText(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  return UNRESOLVED_TOKEN_PATTERN.test(value) ? 'Content unavailable' : value
+}
+
+export function sanitizeResolvedSlides(
+  slides: Array<Record<string, unknown>>
+): { slides: Array<Record<string, unknown>>; hadUnresolvedTokens: boolean } {
+  let hadUnresolvedTokens = false
+
+  // Wraps sanitizeText() to also flag when a value was actually replaced,
+  // without making sanitizeText() itself stateful.
+  const check = (value: unknown): unknown => {
+    const sanitized = sanitizeText(value)
+    if (sanitized !== value) hadUnresolvedTokens = true
+    return sanitized
+  }
+
+  const checkStringArray = (value: unknown): unknown =>
+    Array.isArray(value) ? value.map(check) : value
+
+  const checkMetric = (metric: unknown): unknown => {
+    if (typeof metric !== 'object' || metric === null) return metric
+    const m = metric as Record<string, unknown>
+    return {
+      ...m, // preserves metric.status and any other field untouched
+      label: check(m.label),
+      value: check(m.value),
+    }
+  }
+
+  const checkPriorities = (priorities: unknown): unknown => {
+    if (typeof priorities !== 'object' || priorities === null) return priorities
+    const p = priorities as Record<string, unknown>
+    return {
+      ...p, // preserves any other key untouched
+      critical:  checkStringArray(p.critical),
+      important: checkStringArray(p.important),
+      strategic: checkStringArray(p.strategic),
+    }
+  }
+
+  const checkRecommendation = (rec: unknown): unknown => {
+    if (typeof rec !== 'object' || rec === null) return rec
+    const r = rec as Record<string, unknown>
+    return {
+      ...r, // preserves any other field untouched
+      title:   check(r.title),
+      why:     check(r.why),
+      risk:    check(r.risk),
+      benefit: check(r.benefit),
+    }
+  }
+
+  const sanitizedSlides = slides.map(slide => {
+    if (typeof slide !== 'object' || slide === null) return slide
+    const s = slide as Record<string, unknown>
+    return {
+      ...s, // preserves slide.type and any other field untouched
+      title:   check(s.title),
+      content: check(s.content),
+      bullets: checkStringArray(s.bullets),
+      metrics: Array.isArray(s.metrics) ? s.metrics.map(checkMetric) : s.metrics,
+      priorities: checkPriorities(s.priorities),
+      recommendations: Array.isArray(s.recommendations)
+        ? s.recommendations.map(checkRecommendation)
+        : s.recommendations,
+    }
+  })
+
+  return { slides: sanitizedSlides, hadUnresolvedTokens }
+}

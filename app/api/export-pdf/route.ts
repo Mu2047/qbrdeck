@@ -6,7 +6,7 @@ import { getWorkspaceMembership } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
 import { resolveBranding, buildFooterText } from '@/lib/branding'
 import { resolveHealthScore } from '@/lib/health-score'
-import { resolveSlides, buildPlaceholderContext } from '@/lib/placeholders'
+import { resolveSlides, buildPlaceholderContext, sanitizeResolvedSlides } from '@/lib/placeholders'
 import { getLimits, isUnderLimit, shouldResetPeriod } from '@/lib/limits'
 import { VERSIONS } from '@/lib/versions'
 
@@ -98,9 +98,17 @@ export async function POST(req: NextRequest) {
 
     const resolvedSlides = resolveSlides(qbr.slides as Array<Record<string, unknown>>, placeholderCtx)
 
+    // ── Defensive guard: sanitize the display copy handed to the PDF
+    // renderer. Raw qbr.slides above is untouched; lib/export-pdf.tsx is not
+    // modified — it simply receives already-safe input.
+    const { slides: safeResolvedSlides, hadUnresolvedTokens } = sanitizeResolvedSlides(resolvedSlides)
+    if (hadUnresolvedTokens) {
+      console.error('[unresolved-placeholder][export-pdf]', qbr.id)
+    }
+
     // ── Generate PDF ──────────────────────────────────────────────────────────
     const buffer = await generatePDF(
-      resolvedSlides as any,
+      safeResolvedSlides as any,
       qbr.client.name,
       qbr.quarter,
       qbr.year,

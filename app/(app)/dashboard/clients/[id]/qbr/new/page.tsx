@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { ArrowLeft, Zap, Download, FileText, CheckCircle, AlertTriangle, XCircle, Upload, X } from 'lucide-react'
 import Link from 'next/link'
+import { SlideBody } from '@/components/qbr/SlideBody'
 
 interface Metric { label: string; value: string; status: 'good' | 'caution' | 'risk' }
 interface Slide { title: string; type: string; content: string; bullets?: string[]; metrics?: Metric[] }
@@ -67,6 +68,12 @@ export default function NewQBRPage({ params }: { params: { id: string } }) {
   const [error, setError]         = useState('')
   const [slides, setSlides]       = useState<Slide[]>([])
   const [qbrId, setQbrId]         = useState('')
+  // Deterministic values returned by /api/generate-qbr — used for the cover
+  // and passed into SlideBody for the health-score metric card. Never derived
+  // from any individual slide's AI-authored metric status.
+  const [clientName, setClientName]     = useState('')
+  const [healthScore, setHealthScore]   = useState<number | null>(null)
+  const [healthStatus, setHealthStatus] = useState<string | null>(null)
 
   // ── Subscription / limit state ───────────────────────────────────────────
   const [qbrLimitReached, setQbrLimitReached] = useState(false)
@@ -160,7 +167,12 @@ export default function NewQBRPage({ params }: { params: { id: string } }) {
             : data.message ?? data.error?.message ?? 'Generation failed. Please try again.'
         )
       }
-      setSlides(data.slides); setQbrId(data.qbrId); setStep('preview')
+      setSlides(data.slides)
+      setQbrId(data.qbrId)
+      setClientName(data.clientName ?? '')
+      setHealthScore(data.healthScore ?? null)
+      setHealthStatus(data.healthStatus ?? null)
+      setStep('preview')
     } catch (e: any) {
       setError(e.message || 'Generation failed. Please try again.')
     } finally {
@@ -191,11 +203,6 @@ export default function NewQBRPage({ params }: { params: { id: string } }) {
     }
   }
 
-  const statusBadge = (s: string) =>
-    s === 'good' ? 'badge-green' : s === 'caution' ? 'badge-amber' : 'badge-red'
-  const statusLabel = (s: string) =>
-    s === 'good' ? 'On track' : s === 'caution' ? 'Monitor' : 'Needs attention'
-
   // ── Preview step ────────────────────────────────────────────────────────────
   if (step === 'preview') {
     return (
@@ -217,47 +224,31 @@ export default function NewQBRPage({ params }: { params: { id: string } }) {
             </button>
           </div>
         </div>
+
+        {/* ── Cover ── */}
+        {/* clientName/healthScore/healthStatus come from the generation
+            route's deterministic response fields — never from an individual
+            slide's AI-authored metric status. */}
         <div className="card mb-4 overflow-hidden">
-          <div className="bg-navy-800 p-8">
-            <p className="text-gold-300 text-xs tracking-widest mb-3">QUARTERLY BUSINESS REVIEW</p>
-            <p className="text-white text-2xl font-bold mb-2">Q{form.quarter} {form.year}</p>
-            <div className="h-0.5 w-16 bg-gold-500 mt-4" />
+          <div className="bg-navy-800 p-8 flex items-center justify-between">
+            <div>
+              <p className="text-gold-300 text-xs tracking-widest mb-3">QUARTERLY BUSINESS REVIEW</p>
+              <p className="text-white text-2xl font-bold mb-1">{clientName}</p>
+              <p className="text-gold-300 text-lg">Q{form.quarter} {form.year}</p>
+            </div>
+            <div className="bg-[#0d1f3c] rounded-lg border border-gold-500 px-5 py-3 text-center flex-shrink-0">
+              <p className="text-gold-300 text-[10px] tracking-widest mb-1">TECH HEALTH SCORE</p>
+              <p className="text-white text-3xl font-bold">
+                {healthScore != null ? healthScore : 'N/A'}
+                <span className="text-sm text-gray-400">/100</span>
+              </p>
+              <p className="text-white text-sm font-semibold mt-1">{healthStatus ?? 'Not assessed'}</p>
+            </div>
           </div>
         </div>
+
         {slides.map((slide, i) => (
-          <div key={i} className="card mb-4 overflow-hidden">
-            <div className="bg-navy-800 px-6 py-3 flex items-center justify-between">
-              <p className="text-white text-sm font-medium">{slide.title}</p>
-              <span className="text-white/40 text-xs">Slide {i + 2}</span>
-            </div>
-            <div className="p-6">
-              <p className="text-gray-600 text-sm leading-relaxed mb-4">{slide.content}</p>
-              {slide.type === 'metrics' && slide.metrics && (
-                <div className="grid grid-cols-3 gap-3">
-                  {slide.metrics.map((m, j) => (
-                    <div key={j} className={`rounded-lg p-3.5 border ${
-                      m.status === 'good'    ? 'bg-green-50 border-green-200' :
-                      m.status === 'caution' ? 'bg-amber-50 border-amber-200' :
-                                              'bg-red-50 border-red-200'}`}>
-                      <p className="text-xs text-gray-500 mb-1">{m.label}</p>
-                      <p className="text-xl font-bold text-navy-800 mb-1.5">{m.value}</p>
-                      <span className={statusBadge(m.status) + ' text-xs'}>{statusLabel(m.status)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {slide.bullets && (
-                <div className="space-y-2.5">
-                  {slide.bullets.map((b, j) => (
-                    <div key={j} className="flex items-start gap-2.5">
-                      <div className="w-0.5 h-5 bg-gold-500 flex-shrink-0 mt-0.5 rounded-full" />
-                      <p className="text-sm text-gray-700 leading-relaxed">{b}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
+          <SlideBody key={i} slide={slide} index={i} healthStatus={healthStatus} />
         ))}
         {error && <p className="text-red-500 text-sm mt-4">{error}</p>}
       </div>

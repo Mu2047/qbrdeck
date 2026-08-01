@@ -238,6 +238,32 @@ export function statusToColor(status: HealthStatus): 'green' | 'blue' | 'yellow'
   }
 }
 
+// ── Deterministic health-card label ─────────────────────────────────────────
+// The Technology Health Score metric card is identified by its label (same
+// heuristic already used independently in lib/export-pdf.tsx / lib/export-pptx.ts).
+// Every other metric's label continues to come from the AI-authored good/caution/risk
+// 3-tier status — this only overrides the one card whose label should reflect the
+// deterministic, stored healthStatus instead of the model's free-form status field.
+
+// Identifies whether a given metric label refers to the Technology Health Score card.
+export function isHealthScoreMetric(label: string | null | undefined): boolean {
+  return label?.toLowerCase().includes('health') ?? false
+}
+
+// Returns the label text a metric card should display. For the health-score card,
+// returns the deterministic healthStatus verbatim (e.g. "Excellent") instead of the
+// AI-authored good/caution/risk label. For every other metric, falls back to the
+// existing 3-tier mapping, unchanged.
+export function healthCardLabel(
+  m: { label?: string | null; status?: string | null },
+  healthStatus: string | null | undefined
+): string {
+  if (isHealthScoreMetric(m.label) && healthStatus) return healthStatus
+  return m.status === 'good'    ? 'On track' :
+         m.status === 'caution' ? 'Monitor'  :
+                                   'Needs attention'
+}
+
 // Reconstructs a HealthScoreResult from stored QBR fields (for old records or re-exports)
 // Falls back to computing from rawMetrics if stored score is missing
 export function resolveHealthScore(qbr: {

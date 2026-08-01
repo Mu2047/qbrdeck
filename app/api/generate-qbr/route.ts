@@ -4,7 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { getWorkspaceMembership } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
 import { computeHealthScore } from '@/lib/health-score'
-import { resolveBranding } from '@/lib/branding'
+import { resolveBranding, buildFooterText } from '@/lib/branding'
+import { resolveSlides, buildPlaceholderContext, sanitizeResolvedSlides } from '@/lib/placeholders'
 import { VERSIONS } from '@/lib/versions'
 import { z } from 'zod'
  
@@ -178,6 +179,42 @@ export async function POST(req: NextRequest) {
       },
     })
  
+    // ── Resolve placeholders for the immediate preview (display only) ─────────
+    // qbr.slides was just persisted above as the RAW AI output, unchanged —
+    // this resolved copy exists only in the API response below, for the
+    // preview step to render. Nothing here is written back to the database.
+    const footerText = buildFooterText({
+      branding,
+      clientName: client.name,
+      quarter:    data.quarter,
+      year:       data.year,
+    })
+
+    const placeholderCtx = buildPlaceholderContext({
+      clientName:     client.name,
+      clientIndustry: client.industry,
+      quarter:        data.quarter,
+      year:           data.year,
+      workspaceName:  workspace?.name ?? 'QBR Deck',
+      mspName:        branding.mspName,
+      healthScore:    healthResult.score,
+      healthStatus:   healthResult.status,
+      branding:       { ...branding, footerText },
+      generatedAt:    qbr.createdAt,
+    })
+
+    const resolvedSlides = resolveSlides(
+      slides as unknown as Array<Record<string, unknown>>,
+      placeholderCtx
+    )
+
+    // ── Defensive guard: sanitize the preview display copy before it is
+    // returned. Raw qbr.slides (persisted above) is untouched.
+    const { slides: safeResolvedSlides, hadUnresolvedTokens } = sanitizeResolvedSlides(resolvedSlides)
+    if (hadUnresolvedTokens) {
+      console.error('[unresolved-placeholder][generate-qbr]', qbr.id)
+    }
+
     // ── Auto-suggest next QBR date ────────────────────────────────────────────
     const { suggestNextQbrDate } = await import('@/lib/reminder-utils')
     if (!client.nextQbrDate) {
@@ -208,7 +245,8 @@ export async function POST(req: NextRequest) {
  
     return NextResponse.json({
       qbrId:        qbr.id,
-      slides,
+      slides:       safeResolvedSlides,
+      clientName:   client.name,
       healthScore:  healthResult.score,
       healthStatus: healthResult.status,
     })
