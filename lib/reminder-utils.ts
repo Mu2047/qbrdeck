@@ -25,16 +25,30 @@ export function getReminderStatus(nextQbrDate: Date | null | undefined): Reminde
   return 'upcoming'
 }
 
+const QUARTER_MONTH_MAP: Record<string, { month: number; yearOffset: number }> = {
+  Q1: { month: 3,  yearOffset: 0 }, // April 1
+  Q2: { month: 6,  yearOffset: 0 }, // July 1
+  Q3: { month: 9,  yearOffset: 0 }, // October 1
+  Q4: { month: 0,  yearOffset: 1 }, // January 1 next year
+}
+
+// Accepts both bare digit ("3") and Q-prefixed ("Q3", case-insensitive) quarter
+// values and normalizes them to the "Q1"-"Q4" keys used by QUARTER_MONTH_MAP.
+function normalizeQuarterKey(quarter: string): string {
+  const trimmed = quarter.trim().toUpperCase()
+  return trimmed.startsWith('Q') ? trimmed : `Q${trimmed}`
+}
+
 export function suggestNextQbrDate(quarter: string, year: number): Date {
-  const map: Record<string, { month: number; yearOffset: number }> = {
-    Q1: { month: 3,  yearOffset: 0 }, // April 1
-    Q2: { month: 6,  yearOffset: 0 }, // July 1
-    Q3: { month: 9,  yearOffset: 0 }, // October 1
-    Q4: { month: 0,  yearOffset: 1 }, // January 1 next year
-  }
-  const q = quarter.toUpperCase()
-  const { month, yearOffset } = map[q] ?? { month: 3, yearOffset: 0 }
-  return new Date(year + yearOffset, month, 1)
+  const key = normalizeQuarterKey(quarter)
+  // Unrecognized quarter values fall back to the Q1 default, preserving the
+  // existing behavior for invalid input.
+  const { month, yearOffset } = QUARTER_MONTH_MAP[key] ?? { month: 3, yearOffset: 0 }
+  // Built via Date.UTC so the result is a fixed UTC-midnight instant for the
+  // intended calendar date, independent of the executing server's local
+  // timezone — consistent with how nextQbrDate is stored and displayed
+  // elsewhere (see lib/qbr-display.ts).
+  return new Date(Date.UTC(year + yearOffset, month, 1))
 }
 
 export function formatReminderStatus(status: ReminderStatus): {
