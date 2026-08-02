@@ -11,6 +11,11 @@ const WARNING = 'D97706'
 const DANGER  = 'DC2626'
 const LIGHT_GRAY = 'F4F5F7'
 
+// Gold accent bar drawn along the bottom of every content slide (see
+// addHeaderBar). Shared with addRecommendationsSlide's layout budget below so
+// the two positions can never silently drift apart.
+export const ACCENT_BAR_Y = 5.1
+
 // ── Logo fetcher ─────────────────────────────────────────────────────────────
 interface LogoData { base64: string; extension: string }
 
@@ -37,7 +42,7 @@ function addHeaderBar(slide: pptxgen.Slide, title: string, mspName: string, pptx
   } else if (isWhiteLabel) {
     slide.addText(mspName, { x: 7.5, y: 0.28, w: 2.2, h: 0.35, color: GOLD, fontSize: 9, align: 'right', fontFace: 'Calibri' })
   }
-  slide.addShape(pptx.ShapeType.rect, { x: 0, y: 5.1, w: '100%', h: 0.04, fill: { color: GOLD }, line: { color: GOLD } })
+  slide.addShape(pptx.ShapeType.rect, { x: 0, y: ACCENT_BAR_Y, w: '100%', h: 0.04, fill: { color: GOLD }, line: { color: GOLD } })
 }
 
 // ── Main export ──────────────────────────────────────────────────────────────
@@ -213,17 +218,85 @@ function addRoadmapSlide(pptx: pptxgen, slide: QBRSlide, mspName: string, logo: 
 }
 
 // ── Recommendations slide ─────────────────────────────────────────────────────
-function addRecommendationsSlide(pptx: pptxgen, slide: QBRSlide, mspName: string, logo: LogoData | null, isWhiteLabel = false) {
+// Layout budget for each recommendation card: a title line plus ONE bounded,
+// multiline detail region holding all three labeled fields (why / risk /
+// benefit) as separate paragraphs within a single text box. A previous
+// version used three independent fixed-height boxes, one per field; that
+// broke as soon as a field's text wrapped to a second physical line, since
+// the wrapped line had nowhere to go but into the next field's box. Using one
+// region lets wrapping flow naturally within a single bounded area instead.
+//
+// REC_CARD_DETAIL_LINE_SPACING_PT is an explicit ("Exactly") line pitch, not
+// the font's default auto line-height, so the region's required height is a
+// deterministic computation rather than a font-metrics guess:
+//   detail region height = 5 lines * 10pt / 72 pt-per-inch = 0.694in -> 0.70in
+// (5 lines: "Why" typically 1 line, "Risk" and "Benefit" up to 2 lines each,
+// per the RVTH fixture.) margin: 0 on the detail box removes PowerPoint's
+// default ~0.05-0.1in text-box inset, which would otherwise silently eat into
+// this computed budget.
+//
+// Card geometry is sized so the third card's bottom edge clears ACCENT_BAR_Y
+// by at least REC_CARD_MIN_BOTTOM_CLEARANCE, and consecutive cards never
+// overlap (REC_CARD_STRIDE > REC_CARD_HEIGHT):
+//   3rd card bottom = REC_CARD_FIRST_Y + 2 * REC_CARD_STRIDE + REC_CARD_HEIGHT
+//                    = 1.48 + 2 * 1.14 + 1.10 = 4.86
+//   clearance        = ACCENT_BAR_Y - 4.86 = 5.1 - 4.86 = 0.24  (>= 0.15)
+export const REC_CARD_FIRST_Y = 1.48
+export const REC_CARD_HEIGHT = 1.10
+export const REC_CARD_STRIDE = 1.14
+export const REC_CARD_TITLE_Y_OFFSET = 0.07
+export const REC_CARD_TITLE_HEIGHT = 0.24
+export const REC_CARD_DETAIL_Y_OFFSET = 0.34
+export const REC_CARD_DETAIL_REGION_HEIGHT = 0.70
+export const REC_CARD_DETAIL_FONT_SIZE = 9
+export const REC_CARD_DETAIL_LINE_SPACING_PT = 10
+export const REC_CARD_MIN_BOTTOM_CLEARANCE = 0.15
+
+export function addRecommendationsSlide(pptx: pptxgen, slide: QBRSlide, mspName: string, logo: LogoData | null, isWhiteLabel = false) {
   const s = pptx.addSlide()
   addHeaderBar(s, slide.title, mspName, pptx, logo, isWhiteLabel)
   s.addText(slide.content, { x: 0.5, y: 1.0, w: 9, h: 0.45, color: MID_GRAY, fontSize: 12, fontFace: 'Calibri' })
 
   const recs = slide.recommendations ?? []
   recs.forEach((rec, i) => {
-    const y = 1.55 + i * 1.2
-    s.addShape(pptx.ShapeType.roundRect, { x: 0.3, y, w: 9.4, h: 1.05, fill: { color: i === 0 ? 'FEF2F2' : i === 1 ? 'FFFBEB' : 'EFF6FF' }, line: { color: i === 0 ? DANGER : i === 1 ? WARNING : '2563EB', pt: 0.8 }, rectRadius: 0.05 })
-    s.addShape(pptx.ShapeType.rect, { x: 0.3, y, w: 0.06, h: 1.05, fill: { color: i === 0 ? DANGER : i === 1 ? WARNING : '2563EB' }, line: { color: i === 0 ? DANGER : i === 1 ? WARNING : '2563EB' } })
-    s.addText(`${i + 1}. ${rec.title}`, { x: 0.5, y: y + 0.08, w: 9, h: 0.28, color: '111827', fontSize: 12, bold: true, fontFace: 'Calibri' })
-    s.addText(`Why: ${rec.why}  ·  Benefit: ${rec.benefit}`, { x: 0.5, y: y + 0.38, w: 9, h: 0.5, color: '374151', fontSize: 9.5, fontFace: 'Calibri', breakLine: true })
+    const y = REC_CARD_FIRST_Y + i * REC_CARD_STRIDE
+    const accentColor = i === 0 ? DANGER : i === 1 ? WARNING : '2563EB'
+    const bgColor     = i === 0 ? 'FEF2F2' : i === 1 ? 'FFFBEB' : 'EFF6FF'
+
+    s.addShape(pptx.ShapeType.roundRect, { x: 0.3, y, w: 9.4, h: REC_CARD_HEIGHT, fill: { color: bgColor }, line: { color: accentColor, pt: 0.8 }, rectRadius: 0.05 })
+    s.addShape(pptx.ShapeType.rect, { x: 0.3, y, w: 0.06, h: REC_CARD_HEIGHT, fill: { color: accentColor }, line: { color: accentColor } })
+    s.addText(`${i + 1}. ${rec.title}`, { x: 0.5, y: y + REC_CARD_TITLE_Y_OFFSET, w: 9, h: REC_CARD_TITLE_HEIGHT, color: '111827', fontSize: 12, bold: true, fontFace: 'Calibri' })
+
+    // One bounded, multiline region for all three fields — breakLine on each
+    // run (except the last) starts a new paragraph within the same box, so
+    // a wrapped line stays inside this one region instead of colliding with
+    // the next field.
+    s.addText(
+      [
+        { text: `Why it matters: ${rec.why}`, options: { breakLine: true } },
+        { text: `Risk if ignored: ${rec.risk}`, options: { breakLine: true } },
+        { text: `Expected benefit: ${rec.benefit}` },
+      ],
+      {
+        x: 0.5,
+        y: y + REC_CARD_DETAIL_Y_OFFSET,
+        w: 9,
+        h: REC_CARD_DETAIL_REGION_HEIGHT,
+        color: '374151',
+        fontSize: REC_CARD_DETAIL_FONT_SIZE,
+        fontFace: 'Calibri',
+        lineSpacing: REC_CARD_DETAIL_LINE_SPACING_PT,
+        margin: 0,
+        valign: 'top',
+        wrap: true,
+        // Defensive fallback only, not the primary containment mechanism —
+        // per the installed pptxgenjs typings, PowerPoint computes the
+        // actual "shrink to fit" scale factor only when a user edits/resizes
+        // the shape; pptxgenjs cannot trigger that at generation time. The
+        // static geometry above (region height, line spacing, margin) is
+        // what actually keeps the text inside its box.
+        fit: 'shrink',
+      }
+    )
   })
 }
