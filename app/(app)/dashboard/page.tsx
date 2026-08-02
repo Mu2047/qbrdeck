@@ -3,8 +3,9 @@ import { auth } from '@clerk/nextjs/server'
 import { prisma } from '@/lib/prisma'
 import { redirect } from 'next/navigation'
 import { Users, FileText, TrendingUp, Plus, ArrowRight, AlertCircle, Clock, Calendar } from 'lucide-react'
-import { formatDistanceToNow, format } from 'date-fns'
+import { formatDistanceToNow } from 'date-fns'
 import { getReminderStatus } from '@/lib/reminder-utils'
+import { formatQbrDate, formatQbrQuarter } from '@/lib/qbr-display'
 import { getWorkspaceContext } from '@/lib/workspace'
 
 async function getReminders(workspaceId: string) {
@@ -78,13 +79,13 @@ export default async function DashboardPage() {
           <div className="min-w-0">
             <p className="text-sm font-medium text-navy-800 truncate">{client.name}</p>
             <p className="text-xs text-gray-400">
-              {client.lastQbr ? `Last QBR: ${client.lastQbr.quarter} ${client.lastQbr.year}` : 'No QBRs yet'}
+              {client.lastQbr ? `Last QBR: ${formatQbrQuarter(client.lastQbr.quarter, client.lastQbr.year)}` : 'No QBRs yet'}
             </p>
           </div>
         </Link>
         <div className="flex items-center gap-3 flex-shrink-0 ml-4">
           <span className={`text-xs font-medium ${urgency.color}`}>
-            {urgency.label} · {format(new Date(client.nextQbrDate), 'MMM d')}
+            {urgency.label} · {formatQbrDate(client.nextQbrDate, 'short')}
           </span>
           <Link
             href={`/dashboard/clients/${client.id}/qbr/new?quarter=${client.lastQbr ? (Number(client.lastQbr.quarter) === 4 ? 1 : Number(client.lastQbr.quarter) + 1) : new Date().getMonth() < 3 ? 1 : new Date().getMonth() < 6 ? 2 : new Date().getMonth() < 9 ? 3 : 4}&year=${client.lastQbr && Number(client.lastQbr.quarter) === 4 ? client.lastQbr.year + 1 : client.lastQbr?.year ?? new Date().getFullYear()}`}

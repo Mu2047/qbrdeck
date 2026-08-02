@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { Plus, ArrowLeft, FileText, Download, Pencil, Check, X, Calendar } from 'lucide-react'
 import { format } from 'date-fns'
+import { formatQbrDate, formatQbrQuarter } from '@/lib/qbr-display'
 
 export default function ClientPage({ params }: { params: { id: string } }) {
   const [client, setClient]   = useState<any>(null)
@@ -179,13 +180,13 @@ export default function ClientPage({ params }: { params: { id: string } }) {
             <div>
               <p className="text-xs text-gray-400 mb-1">Last QBR</p>
               <p className="text-sm font-medium text-navy-800">
-                {client.qbrs?.length > 0 ? `${client.qbrs[0].quarter} ${client.qbrs[0].year}` : '—'}
+                {client.qbrs?.length > 0 ? formatQbrQuarter(client.qbrs[0].quarter, client.qbrs[0].year) : '—'}
               </p>
             </div>
             <div>
               <p className="text-xs text-gray-400 mb-1">Next QBR due</p>
               <p className="text-sm font-medium text-navy-800">
-                {client.nextQbrDate ? format(new Date(client.nextQbrDate), 'MMM d, yyyy') : '—'}
+                {client.nextQbrDate ? formatQbrDate(client.nextQbrDate, 'long') : '—'}
               </p>
             </div>
             <div>
