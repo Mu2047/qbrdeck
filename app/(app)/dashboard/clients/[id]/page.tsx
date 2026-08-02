@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { Plus, ArrowLeft, FileText, Download, Pencil, Check, X, Calendar } from 'lucide-react'
 import { format } from 'date-fns'
 import { formatQbrDate, formatQbrQuarter } from '@/lib/qbr-display'
+import { getReminderStatus, formatReminderStatus } from '@/lib/reminder-utils'
 
 export default function ClientPage({ params }: { params: { id: string } }) {
   const [client, setClient]   = useState<any>(null)
@@ -74,6 +75,16 @@ export default function ClientPage({ params }: { params: { id: string } }) {
   const statusBadge = (s: string) =>
     s === 'GENERATED' ? 'badge-green' :
     s === 'EXPORTED'  ? 'badge-gray'  : 'badge-amber'
+
+  // Computed once here (not inside JSX) so the reminder status is derived
+  // from the same shared getReminderStatus() logic used by the dashboard and
+  // /api/reminders, instead of a separately-thresholded inline calculation.
+  // NOTE: this page runs client-side, so "today" is the browser's local
+  // clock, while the dashboard/API compute "today" on the server. The two
+  // can disagree by a calendar day near local midnight — that residual
+  // client/server timezone difference is not addressed by this change.
+  const reminderStatus = getReminderStatus(client.nextQbrDate ? new Date(client.nextQbrDate) : null)
+  const reminderDisplay = formatReminderStatus(reminderStatus)
 
   return (
     <div className="p-8 max-w-3xl">
@@ -191,18 +202,8 @@ export default function ClientPage({ params }: { params: { id: string } }) {
             </div>
             <div>
               <p className="text-xs text-gray-400 mb-1">Status</p>
-              <p className={`text-sm font-medium ${
-                !client.nextQbrDate ? 'text-gray-400' :
-                new Date(client.nextQbrDate) < new Date() ? 'text-red-600' :
-                (new Date(client.nextQbrDate).getTime() - new Date().getTime()) <= 7 * 86400000 ? 'text-orange-500' :
-                (new Date(client.nextQbrDate).getTime() - new Date().getTime()) <= 30 * 86400000 ? 'text-yellow-600' :
-                'text-green-600'
-              }`}>
-                {!client.nextQbrDate ? 'Not Set' :
-                 new Date(client.nextQbrDate) < new Date() ? 'Overdue' :
-                 (new Date(client.nextQbrDate).getTime() - new Date().getTime()) <= 7 * 86400000 ? 'Due This Week' :
-                 (new Date(client.nextQbrDate).getTime() - new Date().getTime()) <= 30 * 86400000 ? 'Due This Month' :
-                 'Upcoming'}
+              <p className={`text-sm font-medium ${reminderDisplay.color}`}>
+                {reminderDisplay.label}
               </p>
             </div>
           </div>
