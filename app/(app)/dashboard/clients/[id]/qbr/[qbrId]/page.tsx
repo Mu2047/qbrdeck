@@ -4,8 +4,27 @@ import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, Download, FileText, Check, Loader2, Share2, Copy, Mail } from 'lucide-react'
 import { healthCardLabel, isHealthScoreMetric, statusToColor, type HealthStatus } from '@/lib/health-score'
+import { requestJson, type ApiResult } from '@/lib/api-client'
 
 type SaveState = 'idle' | 'saving' | 'saved'
+
+// Decision logic for sendToClient(), factored out of the handler for
+// readability: a 2xx response whose payload lacks success === true is a
+// failure, exactly like a non-2xx response or a network rejection — never
+// partial credit for "the fetch resolved". (Not exported: Next.js's App
+// Router restricts page.tsx to its fixed set of framework exports.)
+function resolveSendResult(result: ApiResult<{ success: boolean }>): {
+  sent: boolean
+  error: string | null
+} {
+  if (result.ok && result.data?.success === true) {
+    return { sent: true, error: null }
+  }
+  return {
+    sent: false,
+    error: result.ok ? 'The email could not be sent. Please try again.' : result.error,
+  }
+}
 
 // Tailwind classes for each deterministic health-status color family.
 // Mirrors the equivalent map in components/qbr/SlideBody.tsx (not imported
@@ -34,11 +53,13 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
   const [exporting, setExporting] = useState<'pdf' | 'pptx' | null>(null)
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const saveTimer                 = useRef<NodeJS.Timeout>()
+  const sendConfirmationTimer     = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [sharing, setSharing]     = useState(false)
   const [copied, setCopied]       = useState(false)
   const [shareUrl, setShareUrl]   = useState<string | null>(null)
   const [sending, setSending]     = useState(false)
   const [sent, setSent]           = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
   const [sendEmail, setSendEmail] = useState('')
   const [showEmailInput, setShowEmailInput] = useState(false)
   useEffect(() => {
@@ -50,6 +71,14 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
         setResolvedSlides(data.resolvedSlides ?? data.slides ?? [])
       })
   }, [params.qbrId])
+
+  // Clear any pending "Sent to client!" auto-reset timer on unmount so it
+  // never fires a state update after the page has been navigated away from.
+  useEffect(() => {
+    return () => {
+      if (sendConfirmationTimer.current) clearTimeout(sendConfirmationTimer.current)
+    }
+  }, [])
 
   // ── Save to DB ────────────────────────────────────────────────────────────
   // Always PATCHes rawSlides (never resolvedSlides), so every untouched
@@ -117,17 +146,35 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
 
   // ── Export ────────────────────────────────────────────────────────────────
  async function sendToClient() {
-    if (!sendEmail) return
+    if (!sendEmail || sending) return
+    setSendError(null)
+    setSent(false)
+    if (sendConfirmationTimer.current) {
+      clearTimeout(sendConfirmationTimer.current)
+      sendConfirmationTimer.current = null
+    }
     setSending(true)
-    await fetch(`/api/qbrs/${params.qbrId}/send`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: sendEmail }),
-    })
-    setSending(false)
-    setSent(true)
-    setShowEmailInput(false)
-    setTimeout(() => setSent(false), 3000)
+    try {
+      const result = await requestJson<{ success: boolean }>(`/api/qbrs/${params.qbrId}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: sendEmail }),
+      })
+      const outcome = resolveSendResult(result)
+      if (outcome.sent) {
+        setSent(true)
+        setShowEmailInput(false)
+        sendConfirmationTimer.current = setTimeout(() => {
+          setSent(false)
+          sendConfirmationTimer.current = null
+        }, 3000)
+      } else {
+        setShowEmailInput(true)
+        setSendError(outcome.error)
+      }
+    } finally {
+      setSending(false)
+    }
   }
 
   async function exportFile(type: 'pdf' | 'pptx') {
@@ -224,8 +271,8 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
       <div className="card p-4 mb-6 flex items-center justify-between">
         <p className="text-sm text-gray-600">Export this QBR to share with your client.</p>
         <div className="flex gap-3">
-          <button onClick={() => setShowEmailInput(v => !v)} className="btn-secondary text-sm py-2">
-            {sent ? <><Check size={14} className="text-green-500" /> Sent!</> : <><Mail size={14} /> Send to Client</>}
+          <button onClick={() => setShowEmailInput(v => !v)} disabled={sending} className="btn-secondary text-sm py-2">
+            <Mail size={14} /> Send to Client
           </button>
           <button onClick={shareQBR} disabled={sharing} className="btn-secondary text-sm py-2">
             {sharing ? <Loader2 size={14} className="animate-spin" /> : copied ? <><Check size={14} className="text-green-500" /> Copied!</> : <><Share2 size={14} /> Share Link</>}
@@ -239,25 +286,43 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
         </div>
       </div>
 
+      {/* ── Send status — accessible, and rendered outside the email panel so
+          it persists (and stays announced) even after the panel closes on
+          success. Only mounted while there's something to announce, so the
+          role="status" region is never permanently present but empty. ── */}
+      {(sending || sent) && (
+        <div role="status" aria-live="polite" className="text-xs text-gray-500 h-4 mb-1 flex items-center gap-1.5">
+          {sending && <><Loader2 size={12} className="animate-spin" aria-hidden="true" /> Sending to client...</>}
+          {!sending && sent && <><Check size={12} className="text-green-500" aria-hidden="true" /> Sent to client!</>}
+        </div>
+      )}
+
       {/* ── Email input ── */}
       {showEmailInput && (
-        <div className="card p-4 mb-4 flex items-center gap-3">
-          <Mail size={16} className="text-gray-400 flex-shrink-0" />
-          <input
-            type="email"
-            placeholder="Client email address"
-            value={sendEmail}
-            onChange={e => setSendEmail(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && sendToClient()}
-            className="flex-1 text-sm border border-gray-200 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-navy-800"
-          />
-          <button
-            onClick={sendToClient}
-            disabled={sending || !sendEmail}
-            className="btn-primary text-sm py-2 px-4"
-          >
-            {sending ? 'Sending...' : 'Send'}
-          </button>
+        <div className="card p-4 mb-4 flex flex-col gap-3">
+          <div className="flex items-center gap-3">
+            <Mail size={16} className="text-gray-400 flex-shrink-0" />
+            <input
+              type="email"
+              placeholder="Client email address"
+              aria-label="Client email address"
+              value={sendEmail}
+              onChange={e => setSendEmail(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && sendToClient()}
+              className="flex-1 text-sm border border-gray-200 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-navy-800"
+            />
+            <button
+              onClick={sendToClient}
+              disabled={sending || !sendEmail}
+              aria-busy={sending}
+              className="btn-primary text-sm py-2 px-4"
+            >
+              {sending ? 'Sending...' : 'Send'}
+            </button>
+          </div>
+          {sendError && (
+            <p role="alert" className="text-xs text-red-600">{sendError}</p>
+          )}
         </div>
       )}
 

@@ -1,6 +1,13 @@
-import { Resend } from 'resend'
+import { Resend, type CreateEmailResponse } from 'resend'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
+
+// Resend resolves with { data, error } on API-level failures (invalid key,
+// unverified domain, bad recipient, rate limit) rather than throwing — only
+// a network-level failure throws. Both must surface as a thrown error here
+// so the caller's try/catch (app/api/qbrs/[qbrId]/send/route.ts) can turn
+// either one into a non-2xx response instead of silently "succeeding".
+const SEND_FAILURE_MESSAGE = 'Unable to send the email. Please try again.'
 
 export async function sendQBREmail({
   to,
@@ -17,7 +24,9 @@ export async function sendQBREmail({
   mspName: string
   portalUrl: string
 }) {
-  await resend.emails.send({
+  let result: CreateEmailResponse
+  try {
+    result = await resend.emails.send({
     from: 'QBR Deck <noreply@misecuretechsolutions.com>',
     to,
     subject: `Your Q${quarter} ${year} Quarterly Business Review — ${clientName}`,
@@ -87,5 +96,12 @@ export async function sendQBREmail({
         </body>
       </html>
     `,
-  })
+    })
+  } catch {
+    throw new Error(SEND_FAILURE_MESSAGE)
+  }
+
+  if (result.error) {
+    throw new Error(SEND_FAILURE_MESSAGE)
+  }
 }
