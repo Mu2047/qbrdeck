@@ -26,6 +26,20 @@ function resolveSendResult(result: ApiResult<{ success: boolean }>): {
   }
 }
 
+const SHARE_API_FAILURE_MESSAGE = 'Unable to create the share link. Please try again.'
+const SHARE_CLIPBOARD_FAILURE_MESSAGE =
+  'The share link was created, but it could not be copied. Please copy it manually.'
+
+// Runtime guard for the share token: requestJson<{ token: string }>() only
+// guarantees the *shape* at compile time — a 2xx response can still carry a
+// missing/blank/literal-"undefined" token if the server (or a future bug)
+// sends one, and that must never reach `/portal/${token}` or the clipboard.
+function isValidShareToken(token: unknown): token is string {
+  if (typeof token !== 'string') return false
+  const trimmed = token.trim()
+  return trimmed.length > 0 && trimmed !== 'undefined' && trimmed !== 'null'
+}
+
 // Tailwind classes for each deterministic health-status color family.
 // Mirrors the equivalent map in components/qbr/SlideBody.tsx (not imported
 // from there since SlideBody does not export it and this commit does not
@@ -54,9 +68,17 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const saveTimer                 = useRef<NodeJS.Timeout>()
   const sendConfirmationTimer     = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const copiedTimer               = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Authoritative concurrency guard for clipboard copies: a ref (not just
+  // React state) because it must be readable/settable synchronously, before
+  // the next render, to reject an overlapping copy the instant it starts —
+  // state is closure-based and only updates after rendering.
+  const shareCopyInFlight         = useRef(false)
   const [sharing, setSharing]     = useState(false)
+  const [copyingShareUrl, setCopyingShareUrl] = useState(false)
   const [copied, setCopied]       = useState(false)
   const [shareUrl, setShareUrl]   = useState<string | null>(null)
+  const [shareError, setShareError] = useState<string | null>(null)
   const [sending, setSending]     = useState(false)
   const [sent, setSent]           = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
@@ -77,6 +99,15 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
   useEffect(() => {
     return () => {
       if (sendConfirmationTimer.current) clearTimeout(sendConfirmationTimer.current)
+    }
+  }, [])
+
+  // Clear any pending "Copied!" auto-reset timer on unmount, same reasoning
+  // as the send confirmation timer above — kept as its own effect (rather
+  // than merged into it) so each timer's cleanup is independently testable.
+  useEffect(() => {
+    return () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current)
     }
   }, [])
 
@@ -205,16 +236,60 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
     setExporting(null)
   }
 
+  // Attempts to copy an already-validated portal URL to the clipboard.
+  // Shared by shareQBR() (fresh token) and retryCopyShareUrl() (reusing a
+  // previously validated shareUrl) so a clipboard-only retry never re-calls
+  // the share API for a new token.
+  async function copyShareUrl(url: string) {
+    if (shareCopyInFlight.current) return
+    shareCopyInFlight.current = true
+    setCopyingShareUrl(true)
+    if (copiedTimer.current) {
+      clearTimeout(copiedTimer.current)
+      copiedTimer.current = null
+    }
+    setCopied(false)
+    setShareError(null)
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      copiedTimer.current = setTimeout(() => {
+        setCopied(false)
+        copiedTimer.current = null
+      }, 3000)
+    } catch {
+      setShareError(SHARE_CLIPBOARD_FAILURE_MESSAGE)
+    } finally {
+      shareCopyInFlight.current = false
+      setCopyingShareUrl(false)
+    }
+  }
+
   async function shareQBR() {
+    if (sharing || shareCopyInFlight.current) return
+    setShareError(null)
     setSharing(true)
-    const res  = await fetch(`/api/qbrs/${params.qbrId}/share`, { method: 'POST' })
-    const data = await res.json()
-    const url  = `${window.location.origin}/portal/${data.token}`
-    setShareUrl(url)
-    await navigator.clipboard.writeText(url)
-    setCopied(true)
-    setSharing(false)
-    setTimeout(() => setCopied(false), 3000)
+    try {
+      const result = await requestJson<{ token: string }>(`/api/qbrs/${params.qbrId}/share`, {
+        method: 'POST',
+      })
+      if (!result.ok || !isValidShareToken(result.data?.token)) {
+        setShareError(SHARE_API_FAILURE_MESSAGE)
+        return
+      }
+      const url = `${window.location.origin}/portal/${result.data.token.trim()}`
+      setShareUrl(url)
+      await copyShareUrl(url)
+    } finally {
+      setSharing(false)
+    }
+  }
+
+  // Reuses the already-validated shareUrl — never requests a new token just
+  // to retry a failed clipboard copy.
+  async function retryCopyShareUrl() {
+    if (!shareUrl || sharing || shareCopyInFlight.current) return
+    await copyShareUrl(shareUrl)
   }
 
   if (!qbr) return <div className="p-8 text-gray-400 text-sm">Loading...</div>
@@ -274,8 +349,18 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
           <button onClick={() => setShowEmailInput(v => !v)} disabled={sending} className="btn-secondary text-sm py-2">
             <Mail size={14} /> Send to Client
           </button>
-          <button onClick={shareQBR} disabled={sharing} className="btn-secondary text-sm py-2">
-            {sharing ? <Loader2 size={14} className="animate-spin" /> : copied ? <><Check size={14} className="text-green-500" /> Copied!</> : <><Share2 size={14} /> Share Link</>}
+          <button
+            onClick={shareQBR}
+            disabled={sharing || copyingShareUrl}
+            aria-busy={sharing || copyingShareUrl}
+            aria-label="Share Link"
+            className="btn-secondary text-sm py-2"
+          >
+            {sharing
+              ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+              : copied
+              ? <><Check size={14} className="text-green-500" aria-hidden="true" /> Copied!</>
+              : <><Share2 size={14} aria-hidden="true" /> Share Link</>}
           </button>
           <button onClick={() => exportFile('pdf')} disabled={!!exporting} className="btn-secondary text-sm py-2">
             {exporting === 'pdf' ? 'Exporting...' : <><Download size={14} /> PDF</>}
@@ -294,6 +379,49 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
         <div role="status" aria-live="polite" className="text-xs text-gray-500 h-4 mb-1 flex items-center gap-1.5">
           {sending && <><Loader2 size={12} className="animate-spin" aria-hidden="true" /> Sending to client...</>}
           {!sending && sent && <><Check size={12} className="text-green-500" aria-hidden="true" /> Sent to client!</>}
+        </div>
+      )}
+
+      {/* ── Share status — same accessible pattern as Send status: only
+          mounted while there's something to announce. ── */}
+      {(sharing || copyingShareUrl || copied) && (
+        <div role="status" aria-live="polite" className="text-xs text-gray-500 h-4 mb-1 flex items-center gap-1.5">
+          {sharing && <><Loader2 size={12} className="animate-spin" aria-hidden="true" /> Creating share link...</>}
+          {!sharing && copyingShareUrl && <><Loader2 size={12} className="animate-spin" aria-hidden="true" /> Copying share link...</>}
+          {!sharing && !copyingShareUrl && copied && <><Check size={12} className="text-green-500" aria-hidden="true" /> Copied!</>}
+        </div>
+      )}
+
+      {/* ── Share failure — covers both an invalid/failed API result and a
+          failed clipboard write; the two are distinguished by message text
+          (see SHARE_API_FAILURE_MESSAGE / SHARE_CLIPBOARD_FAILURE_MESSAGE). ── */}
+      {shareError && (
+        <p role="alert" className="text-xs text-red-600 mb-2">{shareError}</p>
+      )}
+
+      {/* ── Manual share-link fallback — shown whenever a token has been
+          validated, so the link survives a clipboard failure (and stays
+          available afterward for a manual copy) without ever requesting a
+          new token just to retry the copy. ── */}
+      {shareUrl && (
+        <div className="card p-4 mb-4 flex items-center gap-3">
+          <input
+            type="text"
+            readOnly
+            aria-label="Share link URL"
+            value={shareUrl}
+            onFocus={e => e.target.select()}
+            className="flex-1 text-sm border border-gray-200 rounded px-3 py-2 bg-gray-50 text-gray-700"
+          />
+          <button
+            onClick={retryCopyShareUrl}
+            disabled={sharing || copyingShareUrl}
+            aria-busy={copyingShareUrl}
+            aria-label="Copy share link to clipboard"
+            className="btn-secondary text-sm py-2 px-4"
+          >
+            <Copy size={14} aria-hidden="true" /> Copy
+          </button>
         </div>
       )}
 
