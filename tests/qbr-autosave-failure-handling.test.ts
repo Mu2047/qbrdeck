@@ -307,9 +307,9 @@ describe('page.tsx — editing stays available; every edit re-enters the same se
     expect(updatersSource).toMatch(/saveSlides\(nextRaw\)/g)
   })
 
-  it('every updater calls saveSlides with the fresh raw snapshot — exactly three call sites', () => {
+  it('every updater calls saveSlides with the fresh raw snapshot — exactly five call sites', () => {
     const calls = pageSource.match(/saveSlides\(nextRaw\)/g) ?? []
-    expect(calls.length).toBe(3) // updateContent, updateBullet, updateMetric
+    expect(calls.length).toBe(5) // updateContent, updateBullet, updateMetric, updatePriority, updateRecommendation
   })
 
   it('saveSlides/enqueueSaveBody never touch rawSlides/resolvedSlides state — a save failure cannot roll back or clear the visible edit', () => {

@@ -298,6 +298,46 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
     saveSlides(nextRaw)
   }
 
+  type PriorityCategory = 'critical' | 'important' | 'strategic'
+
+  function updatePriority(slideIdx: number, category: PriorityCategory, itemIdx: number, value: string) {
+    const nextRaw = rawSlides.map((s, i) => {
+      if (i !== slideIdx) return s
+      const items = s.priorities[category].map((item: string, k: number) => k === itemIdx ? value : item)
+      return { ...s, priorities: { ...s.priorities, [category]: items } }
+    })
+    const nextResolved = resolvedSlides.map((s, i) => {
+      if (i !== slideIdx) return s
+      const items = s.priorities[category].map((item: string, k: number) => k === itemIdx ? value : item)
+      return { ...s, priorities: { ...s.priorities, [category]: items } }
+    })
+    setRawSlides(nextRaw)
+    setResolvedSlides(nextResolved)
+    saveSlides(nextRaw)
+  }
+
+  type RecommendationField = 'title' | 'why' | 'risk' | 'benefit'
+
+  function updateRecommendation(slideIdx: number, recIdx: number, field: RecommendationField, value: string) {
+    const nextRaw = rawSlides.map((s, i) => {
+      if (i !== slideIdx) return s
+      const recommendations = s.recommendations.map((r: any, j: number) =>
+        j === recIdx ? { ...r, [field]: value } : r
+      )
+      return { ...s, recommendations }
+    })
+    const nextResolved = resolvedSlides.map((s, i) => {
+      if (i !== slideIdx) return s
+      const recommendations = s.recommendations.map((r: any, j: number) =>
+        j === recIdx ? { ...r, [field]: value } : r
+      )
+      return { ...s, recommendations }
+    })
+    setRawSlides(nextRaw)
+    setResolvedSlides(nextResolved)
+    saveSlides(nextRaw)
+  }
+
   // ── Export ────────────────────────────────────────────────────────────────
  async function sendToClient() {
     if (!sendEmail || sending) return
@@ -661,16 +701,29 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
 
                   return (
                     <div key={j} className={`rounded-lg p-3.5 border ${cardClasses}`}>
-                      <EditableText
-                        value={m.label}
-                        onSave={val => updateMetric(i, j, 'label', val)}
-                        className="text-xs text-gray-500 mb-1 block"
-                      />
-                      <EditableText
-                        value={m.value}
-                        onSave={val => updateMetric(i, j, 'value', val)}
-                        className="text-xl font-bold text-navy-800 mb-1 block"
-                      />
+                      {/* Health-score card: label is also deterministic/read-only,
+                          same reasoning as the status below — it must always match
+                          qbr.healthScore/healthStatus, never an independently
+                          editable copy that could drift from the authoritative
+                          value shown on the cover card above. Non-health cards
+                          keep their existing editable label. */}
+                      {healthClasses ? (
+                        <p className="text-xs text-gray-500 mb-1">{m.label}</p>
+                      ) : (
+                        <EditableText
+                          value={m.label}
+                          onSave={val => updateMetric(i, j, 'label', val)}
+                          className="text-xs text-gray-500 mb-1 block"
+                        />
+                      )}
+                      {/* Metric value is read-only for every card, health and
+                          non-health alike — it is presentation copy of data
+                          sourced from qbr fields (ticket counts, uptime, etc.)
+                          or the health score, and editing only this display
+                          string would let it silently diverge from the
+                          authoritative source without changing anything it is
+                          meant to represent. */}
+                      <p className="text-xl font-bold text-navy-800 mb-1">{m.value}</p>
                       {/* Health-score card: deterministic, read-only status —
                           the AI-authored 3-tier status select below does not
                           apply to this card, since its displayed status must
@@ -717,8 +770,10 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
               </div>
             )}
 
-            {/* Roadmap — read-only in this commit; presentation ported from
-                components/qbr/SlideBody.tsx / the public portal verbatim. */}
+            {/* Roadmap — item text is editable; column labels, structure,
+                ordering, and item count are unchanged from the read-only
+                presentation ported from components/qbr/SlideBody.tsx / the
+                public portal. */}
             {slide.priorities && (
               <div className="grid grid-cols-3 gap-4">
                 {[
@@ -730,7 +785,14 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
                     <p className="text-xs font-bold uppercase tracking-wide mb-2">{col.label}</p>
                     <ul className="space-y-1.5">
                       {(slide.priorities[col.key] ?? []).map((item: string, k: number) => (
-                        <li key={k} className="text-xs leading-snug">— {item}</li>
+                        <li key={k} className="text-xs leading-snug flex items-start gap-1">
+                          <span className="flex-shrink-0">—</span>
+                          <EditableText
+                            value={item}
+                            onSave={val => updatePriority(i, col.key as PriorityCategory, k, val)}
+                            className="text-xs leading-snug flex-1"
+                          />
+                        </li>
                       ))}
                     </ul>
                   </div>
@@ -738,18 +800,26 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
               </div>
             )}
 
-            {/* Recommendations — read-only in this commit; presentation
-                ported from components/qbr/SlideBody.tsx / the public portal
-                verbatim. */}
+            {/* Recommendations — title/why/risk/benefit values are editable;
+                the numbering prefix and "Why it matters:"/"Risk if
+                ignored:"/"Expected benefit:" labels stay fixed, unchanged
+                from the read-only presentation ported from
+                components/qbr/SlideBody.tsx / the public portal. */}
             {slide.recommendations && (
               <div className="space-y-4">
                 {slide.recommendations.map((rec: any, j: number) => (
                   <div key={j} className="border border-gray-100 rounded-lg p-4">
-                    <p className="text-sm font-semibold text-[#0a1634] mb-2">{j + 1}. {rec.title}</p>
+                    <p className="text-sm font-semibold text-[#0a1634] mb-2">
+                      {j + 1}. <EditableText
+                        value={rec.title}
+                        onSave={val => updateRecommendation(i, j, 'title', val)}
+                        className="text-sm font-semibold text-[#0a1634]"
+                      />
+                    </p>
                     <div className="space-y-1 text-xs text-gray-600">
-                      <p><span className="font-medium text-gray-700">Why it matters:</span> {rec.why}</p>
-                      <p><span className="font-medium text-gray-700">Risk if ignored:</span> {rec.risk}</p>
-                      <p><span className="font-medium text-gray-700">Expected benefit:</span> {rec.benefit}</p>
+                      <p><span className="font-medium text-gray-700">Why it matters:</span> <EditableText value={rec.why} onSave={val => updateRecommendation(i, j, 'why', val)} className="text-xs text-gray-600" /></p>
+                      <p><span className="font-medium text-gray-700">Risk if ignored:</span> <EditableText value={rec.risk} onSave={val => updateRecommendation(i, j, 'risk', val)} className="text-xs text-gray-600" /></p>
+                      <p><span className="font-medium text-gray-700">Expected benefit:</span> <EditableText value={rec.benefit} onSave={val => updateRecommendation(i, j, 'benefit', val)} className="text-xs text-gray-600" /></p>
                     </div>
                   </div>
                 ))}
