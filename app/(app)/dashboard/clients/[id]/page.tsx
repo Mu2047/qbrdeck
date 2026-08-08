@@ -5,7 +5,8 @@ import Link from 'next/link'
 import { Plus, ArrowLeft, FileText, Download, Pencil, Check, X, Calendar } from 'lucide-react'
 import { format } from 'date-fns'
 import { formatQbrDate, formatQbrQuarter } from '@/lib/qbr-display'
-import { getReminderStatus, formatReminderStatus } from '@/lib/reminder-utils'
+import { formatReminderStatus } from '@/lib/reminder-utils'
+import type { ReminderStatus } from '@/lib/reminder-utils'
 
 export default function ClientPage({ params }: { params: { id: string } }) {
   const [client, setClient]   = useState<any>(null)
@@ -18,8 +19,19 @@ export default function ClientPage({ params }: { params: { id: string } }) {
 
   useEffect(() => {
     fetch(`/api/clients/${params.id}`)
-      .then(r => r.json())
-      .then(data => {
+      .then(async r => {
+        const data = await r.json()
+        // Under the server-authoritative reminder-status contract, a populated
+        // client state must always be a successful API payload (it always
+        // carries reminderStatus). A non-2xx response is an error object, not
+        // a Client — never setClient() with it; reuse the existing error
+        // state instead so the loading state resolves into a visible failure
+        // rather than either hanging on "Loading..." forever or rendering a
+        // fabricated/partial client.
+        if (!r.ok) {
+          setError(data.error ?? 'Failed to load client')
+          return
+        }
         setClient(data)
         setForm({
           name:         data.name         ?? '',
@@ -70,21 +82,22 @@ export default function ClientPage({ params }: { params: { id: string } }) {
     setEditing(false)
   }
 
-  if (!client) return <div className="p-8 text-gray-400 text-sm">Loading...</div>
+  if (!client) {
+    // Reuses the same error state/styling as the edit-form error below —
+    // these two never render simultaneously, since the edit form can't be
+    // reached until a successful client payload has populated `client`.
+    if (error) return <p className="p-8 text-red-500 text-sm">{error}</p>
+    return <div className="p-8 text-gray-400 text-sm">Loading...</div>
+  }
 
   const statusBadge = (s: string) =>
     s === 'GENERATED' ? 'badge-green' :
     s === 'EXPORTED'  ? 'badge-gray'  : 'badge-amber'
 
-  // Computed once here (not inside JSX) so the reminder status is derived
-  // from the same shared getReminderStatus() logic used by the dashboard and
-  // /api/reminders, instead of a separately-thresholded inline calculation.
-  // NOTE: this page runs client-side, so "today" is the browser's local
-  // clock, while the dashboard/API compute "today" on the server. The two
-  // can disagree by a calendar day near local midnight — that residual
-  // client/server timezone difference is not addressed by this change.
-  const reminderStatus = getReminderStatus(client.nextQbrDate ? new Date(client.nextQbrDate) : null)
-  const reminderDisplay = formatReminderStatus(reminderStatus)
+  // reminderStatus is computed server-side (see app/api/clients/[id]/route.ts)
+  // and arrives as a field on the fetched/PATCHed client record — this page
+  // only formats it for display, it never derives it from the browser's clock.
+  const reminderDisplay = formatReminderStatus(client.reminderStatus as ReminderStatus)
 
   return (
     <div className="p-8 max-w-3xl">
@@ -113,7 +126,7 @@ export default function ClientPage({ params }: { params: { id: string } }) {
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setEditing(true)}
+                onClick={() => { setError(''); setEditing(true) }}
                 className="btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5"
               >
                 <Pencil size={13} /> Edit
@@ -216,18 +229,29 @@ export default function ClientPage({ params }: { params: { id: string } }) {
             />
             <button
               onClick={async () => {
-                setSaving(true)
-                const res = await fetch(`/api/clients/${params.id}`, {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    name: client.name,
-                    nextQbrDate: form.nextQbrDate ? new Date(form.nextQbrDate).toISOString() : null,
-                  }),
-                })
-                const data = await res.json()
-                setClient(data)
-                setSaving(false)
+                setSaving(true); setError('')
+                try {
+                  const res = await fetch(`/api/clients/${params.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      name: client.name,
+                      nextQbrDate: form.nextQbrDate ? new Date(form.nextQbrDate).toISOString() : null,
+                    }),
+                  })
+                  const data = await res.json()
+                  // Same response-boundary guard as saveEdit(): only a
+                  // successful payload (which always carries the fresh
+                  // server-computed reminderStatus) may replace client state.
+                  // On failure, the previously valid client object is left
+                  // exactly as it was — never overwritten with the error JSON.
+                  if (!res.ok) throw new Error(data.error)
+                  setClient(data)
+                } catch (e: any) {
+                  setError(e.message)
+                } finally {
+                  setSaving(false)
+                }
               }}
               disabled={saving}
               className="btn-primary text-xs py-1.5 px-3"
@@ -235,6 +259,7 @@ export default function ClientPage({ params }: { params: { id: string } }) {
               {saving ? 'Saving...' : 'Save date'}
             </button>
           </div>
+          {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
         </div>
       )}
 

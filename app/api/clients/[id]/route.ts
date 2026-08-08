@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceMembership } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
+import { getReminderStatus } from '@/lib/reminder-utils'
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   try {
@@ -21,7 +22,10 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     })
     if (!client) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    return NextResponse.json(client)
+    // Server-authoritative reminder status: computed here (server clock),
+    // never in the browser — see app/(app)/dashboard/clients/[id]/page.tsx.
+    // Transient only; never persisted.
+    return NextResponse.json({ ...client, reminderStatus: getReminderStatus(client.nextQbrDate) })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }
@@ -63,7 +67,9 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       },
     })
 
-    return NextResponse.json(updated)
+    // Recomputed from this same update result — no second database read —
+    // so the client's post-save state is never stale, exactly like GET above.
+    return NextResponse.json({ ...updated, reminderStatus: getReminderStatus(updated.nextQbrDate) })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }
