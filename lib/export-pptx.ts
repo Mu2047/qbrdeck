@@ -1,6 +1,7 @@
 import pptxgen from 'pptxgenjs'
 import type { QBRSlide, QBRInput } from '@/lib/anthropic'
 import { computeHealthScore } from '@/lib/health-score'
+import { CONFIDENTIALITY_STATEMENT } from '@/lib/export-constants'
 
 const NAVY  = '0a1634'
 const GOLD  = 'c9a02a'
@@ -128,6 +129,7 @@ export async function generatePPTX(
   ty.addText('Thank you for your partnership.', { x: 0.8, y: 1.6, w: 8.4, h: 1.2, color: WHITE, fontSize: 34, bold: true, fontFace: 'Calibri' })
   ty.addText(isWhiteLabel ? `${mspName} — Your Strategic IT Partner` : 'Generated with QBR Deck', { x: 0.8, y: 3.0, w: 8.4, h: 0.5, color: GOLD, fontSize: 16, fontFace: 'Calibri' })
   ty.addText(`Let's schedule your Q${Number(quarter) === 4 ? 1 : Number(quarter) + 1} planning session.`, { x: 0.8, y: 3.6, w: 8.4, h: 0.4, color: 'AAAAAA', fontSize: 13, fontFace: 'Calibri' })
+  ty.addText(CONFIDENTIALITY_STATEMENT(clientName), { x: 0.8, y: 4.0, w: 8.4, h: 0.4, color: '666666', fontSize: 10, charSpacing: 1, fontFace: 'Calibri' })
   const buffer = await pptx.write({ outputType: 'nodebuffer' }) as Buffer
   return buffer
 }
