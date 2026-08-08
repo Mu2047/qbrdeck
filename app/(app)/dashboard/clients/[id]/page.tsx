@@ -13,6 +13,11 @@ export default function ClientPage({ params }: { params: { id: string } }) {
   const [editing, setEditing] = useState(false)
   const [saving, setSaving]   = useState(false)
   const [error, setError]     = useState('')
+  // Event-driven, per product ruling: only ever set to true (inside
+  // saveEdit(), on a qualifying rename) or false (on explicit dismissal).
+  // Never re-derived from current state on render/save, so a later
+  // non-rename save cannot silently clear an active notice.
+  const [showRenameExportNotice, setShowRenameExportNotice] = useState(false)
   const [form, setForm]       = useState({
     name: '', industry: '', contactName: '', contactEmail: '', userCount: '', notes: '', nextQbrDate: ''
   })
@@ -59,6 +64,19 @@ export default function ClientPage({ params }: { params: { id: string } }) {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
+      // Rename-export notice: both facts must come from the PRE-save
+      // snapshot. `client.name` here is this closure's pre-save value (React
+      // hasn't re-rendered yet), compared against the server-confirmed
+      // `data.name`. `client.qbrs` is likewise the pre-save array — PATCH's
+      // response never includes `qbrs` (Prisma's plain update() has no
+      // `include`), so reading the count from `data` after setClient(data)
+      // would always see undefined and permanently suppress the notice.
+      const renamed = client.name !== data.name
+      const hadQbrs = (client.qbrs?.length ?? 0) > 0
+      // Only ever turns the notice ON. A non-qualifying save (no rename, or
+      // zero pre-save QBRs) leaves an already-active notice exactly as it
+      // was — this line never sets it to false.
+      if (renamed && hadQbrs) setShowRenameExportNotice(true)
       setClient(data)
       setEditing(false)
     } catch (e: any) {
@@ -185,12 +203,20 @@ export default function ClientPage({ params }: { params: { id: string } }) {
         )}
       </div>
 
-      {/* Regenerate notice */}
-      {!editing && (
+      {/* Regenerate notice — event-driven by showRenameExportNotice (set in
+          saveEdit() only on a qualifying rename), not by editing state. */}
+      {showRenameExportNotice && (
         <div className="rounded-lg bg-blue-50 border border-blue-200 px-4 py-3 mb-6 flex items-center justify-between">
           <p className="text-sm text-blue-800">
             If you updated the client name, re-export any existing QBRs to apply the new name to PDF and PowerPoint.
           </p>
+          <button
+            onClick={() => setShowRenameExportNotice(false)}
+            aria-label="Dismiss"
+            className="text-blue-400 hover:text-blue-600 flex-shrink-0 ml-3"
+          >
+            <X size={14} />
+          </button>
         </div>
       )}
 
