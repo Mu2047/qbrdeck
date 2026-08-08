@@ -4,8 +4,44 @@ import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, Download, FileText, Check, Loader2, Share2, Copy, Mail } from 'lucide-react'
 import { healthCardLabel, isHealthScoreMetric, statusToColor, type HealthStatus } from '@/lib/health-score'
+import { requestJson, type ApiResult } from '@/lib/api-client'
+import { SerializedLatestQueue } from '@/lib/serialized-latest-queue'
 
-type SaveState = 'idle' | 'saving' | 'saved'
+type SaveState = 'idle' | 'saving' | 'saved' | 'error'
+
+// Decision logic for sendToClient(), factored out of the handler for
+// readability: a 2xx response whose payload lacks success === true is a
+// failure, exactly like a non-2xx response or a network rejection — never
+// partial credit for "the fetch resolved". (Not exported: Next.js's App
+// Router restricts page.tsx to its fixed set of framework exports.)
+function resolveSendResult(result: ApiResult<{ success: boolean }>): {
+  sent: boolean
+  error: string | null
+} {
+  if (result.ok && result.data?.success === true) {
+    return { sent: true, error: null }
+  }
+  return {
+    sent: false,
+    error: result.ok ? 'The email could not be sent. Please try again.' : result.error,
+  }
+}
+
+const SAVE_FAILURE_MESSAGE = 'Your latest changes were not saved. Please retry.'
+
+const SHARE_API_FAILURE_MESSAGE = 'Unable to create the share link. Please try again.'
+const SHARE_CLIPBOARD_FAILURE_MESSAGE =
+  'The share link was created, but it could not be copied. Please copy it manually.'
+
+// Runtime guard for the share token: requestJson<{ token: string }>() only
+// guarantees the *shape* at compile time — a 2xx response can still carry a
+// missing/blank/literal-"undefined" token if the server (or a future bug)
+// sends one, and that must never reach `/portal/${token}` or the clipboard.
+function isValidShareToken(token: unknown): token is string {
+  if (typeof token !== 'string') return false
+  const trimmed = token.trim()
+  return trimmed.length > 0 && trimmed !== 'undefined' && trimmed !== 'null'
+}
 
 // Tailwind classes for each deterministic health-status color family.
 // Mirrors the equivalent map in components/qbr/SlideBody.tsx (not imported
@@ -33,12 +69,35 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
   const [resolvedSlides, setResolvedSlides] = useState<any[]>([])
   const [exporting, setExporting] = useState<'pdf' | 'pptx' | null>(null)
   const [saveState, setSaveState] = useState<SaveState>('idle')
-  const saveTimer                 = useRef<NodeJS.Timeout>()
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const saveTimer                 = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Serializes every autosave PATCH so requests execute strictly in the
+  // order the edits were queued and never overlap — an older request can
+  // therefore never finish after a newer one and overwrite it. Each
+  // enqueue() is stamped with a version; only the caller holding the latest
+  // version may set the final visible saveState (see enqueueSaveBody()).
+  const saveQueueRef              = useRef(new SerializedLatestQueue<ApiResult<unknown>>())
+  // Authoritative concurrency guard for Retry save: a ref (not just
+  // retryingSave/saveState) because rapid double-clicks can both observe a
+  // stale, pre-re-render state and slip past a state-only guard — same
+  // reasoning as shareCopyInFlight below.
+  const retrySaveInFlight         = useRef(false)
+  const [retryingSave, setRetryingSave] = useState(false)
+  const sendConfirmationTimer     = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const copiedTimer               = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Authoritative concurrency guard for clipboard copies: a ref (not just
+  // React state) because it must be readable/settable synchronously, before
+  // the next render, to reject an overlapping copy the instant it starts —
+  // state is closure-based and only updates after rendering.
+  const shareCopyInFlight         = useRef(false)
   const [sharing, setSharing]     = useState(false)
+  const [copyingShareUrl, setCopyingShareUrl] = useState(false)
   const [copied, setCopied]       = useState(false)
   const [shareUrl, setShareUrl]   = useState<string | null>(null)
+  const [shareError, setShareError] = useState<string | null>(null)
   const [sending, setSending]     = useState(false)
   const [sent, setSent]           = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
   const [sendEmail, setSendEmail] = useState('')
   const [showEmailInput, setShowEmailInput] = useState(false)
   useEffect(() => {
@@ -51,19 +110,143 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
       })
   }, [params.qbrId])
 
+  // Clear any pending "Sent to client!" auto-reset timer on unmount so it
+  // never fires a state update after the page has been navigated away from.
+  useEffect(() => {
+    return () => {
+      if (sendConfirmationTimer.current) clearTimeout(sendConfirmationTimer.current)
+    }
+  }, [])
+
+  // Clear any pending "Copied!" auto-reset timer on unmount, same reasoning
+  // as the send confirmation timer above — kept as its own effect (rather
+  // than merged into it) so each timer's cleanup is independently testable.
+  useEffect(() => {
+    return () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current)
+    }
+  }, [])
+
+  // Clear any pending "Saved" -> "idle" auto-reset timer on unmount, same
+  // reasoning as the timers above.
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current)
+    }
+  }, [])
+
   // ── Save to DB ────────────────────────────────────────────────────────────
   // Always PATCHes rawSlides (never resolvedSlides), so every untouched
   // field's raw {{...}} placeholders are preserved exactly as stored.
-  async function saveSlides(nextRawSlides: any[]) {
+  //
+  // enqueueSaveBody() is the single place that owns the save-state decision
+  // logic — used by every save attempt, fresh edit or Retry, via
+  // saveSlides() — so there is exactly one decision path, never a parallel
+  // one. Every attempt is enqueued on saveQueueRef, so attempts never
+  // overlap — attempt N+1 cannot start until attempt N has fully settled —
+  // and only the *latest* enqueued attempt (per saveQueueRef.current
+  // .isLatest) is allowed to set the final visible saveState. A slower
+  // older attempt that settles (or rejects) after a newer edit was queued
+  // therefore can never flash a stale "Saved", clear a newer error, or
+  // overwrite what the newer edit wrote. Crucially this holds even when the
+  // older attempt's task actually reached the network and the newer
+  // attempt's did not (e.g. the newer attempt failed to serialize) — the
+  // queue task itself is what decides whether to call requestJson, so every
+  // attempt claims a version before enqueueSaveBody ever awaits it. No save
+  // attempt bypasses this version/isLatest ownership model.
+  async function enqueueSaveBody(task: () => Promise<ApiResult<unknown>>): Promise<void> {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current)
+      saveTimer.current = null
+    }
+    setSaveError(null)
     setSaveState('saving')
-    clearTimeout(saveTimer.current)
-    await fetch(`/api/qbrs/${params.qbrId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slides: nextRawSlides }),
+
+    const { version, settled } = saveQueueRef.current.enqueue(task)
+
+    let result: ApiResult<unknown>
+    try {
+      result = await settled
+    } catch {
+      // The queue's task rejected (e.g. a future requestJson/queue
+      // regression) — never let that leave the UI stuck on "Saving...", and
+      // never let a superseded rejection overwrite newer work.
+      if (!saveQueueRef.current.isLatest(version)) return
+      setSaveState('error')
+      setSaveError(SAVE_FAILURE_MESSAGE)
+      return
+    }
+
+    // A newer save was queued while this one was in flight — that newer
+    // call owns the final visible state; this one's outcome is discarded.
+    if (!saveQueueRef.current.isLatest(version)) return
+
+    if (result.ok) {
+      setSaveState('saved')
+      saveTimer.current = setTimeout(() => {
+        if (saveQueueRef.current.isLatest(version)) setSaveState('idle')
+        saveTimer.current = null
+      }, 2000)
+    } else {
+      setSaveState('error')
+      setSaveError(SAVE_FAILURE_MESSAGE)
+    }
+  }
+
+  // Serializes nextRawSlides synchronously, before this snapshot can ever be
+  // touched by a later edit — then enqueues exactly one queue task
+  // regardless of whether serialization succeeded. A serialization failure
+  // (e.g. a future updater that accidentally introduces a circular
+  // reference) is therefore never invisible to the queue: it still claims a
+  // version via saveQueueRef.current.enqueue() inside enqueueSaveBody(), so
+  // it can still invalidate an older in-flight attempt and can still be
+  // invalidated by a newer one — exactly like a normal PATCH failure, never
+  // a bypass of the version/isLatest ownership model. The queue task never
+  // throws and never reaches the network layer when serialization failed;
+  // it resolves a safe local ApiFailure instead, so the real serialization
+  // exception is never exposed.
+  async function saveSlides(nextRawSlides: any[]) {
+    let requestBody: string | null
+    try {
+      requestBody = JSON.stringify({ slides: nextRawSlides })
+    } catch {
+      requestBody = null
+    }
+    const body = requestBody
+
+    await enqueueSaveBody(() => {
+      if (body === null) {
+        return Promise.resolve<ApiResult<unknown>>({
+          ok: false,
+          status: null,
+          error: SAVE_FAILURE_MESSAGE,
+        })
+      }
+      return requestJson<unknown>(`/api/qbrs/${params.qbrId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      })
     })
-    setSaveState('saved')
-    saveTimer.current = setTimeout(() => setSaveState('idle'), 2000)
+  }
+
+  // Retries by re-running the identical serialize → enqueue → version →
+  // result flow as any other edit, against the CURRENT rawSlides — never a
+  // cached body that could belong to an older edit. There is only one
+  // source of truth for what Retry sends: the rawSlides state visible on
+  // screen right now. Never automatic (only fired by the user clicking
+  // Retry save), and guarded by a ref (not just saveState/retryingSave) so
+  // a rapid double-click can never enqueue the same retry twice.
+  async function retrySave() {
+    if (retrySaveInFlight.current) return
+    retrySaveInFlight.current = true
+    setRetryingSave(true)
+    try {
+      await saveSlides(rawSlides)
+    } finally {
+      retrySaveInFlight.current = false
+      setRetryingSave(false)
+    }
   }
 
   // ── Slide field updaters ──────────────────────────────────────────────────
@@ -117,17 +300,35 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
 
   // ── Export ────────────────────────────────────────────────────────────────
  async function sendToClient() {
-    if (!sendEmail) return
+    if (!sendEmail || sending) return
+    setSendError(null)
+    setSent(false)
+    if (sendConfirmationTimer.current) {
+      clearTimeout(sendConfirmationTimer.current)
+      sendConfirmationTimer.current = null
+    }
     setSending(true)
-    await fetch(`/api/qbrs/${params.qbrId}/send`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: sendEmail }),
-    })
-    setSending(false)
-    setSent(true)
-    setShowEmailInput(false)
-    setTimeout(() => setSent(false), 3000)
+    try {
+      const result = await requestJson<{ success: boolean }>(`/api/qbrs/${params.qbrId}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: sendEmail }),
+      })
+      const outcome = resolveSendResult(result)
+      if (outcome.sent) {
+        setSent(true)
+        setShowEmailInput(false)
+        sendConfirmationTimer.current = setTimeout(() => {
+          setSent(false)
+          sendConfirmationTimer.current = null
+        }, 3000)
+      } else {
+        setShowEmailInput(true)
+        setSendError(outcome.error)
+      }
+    } finally {
+      setSending(false)
+    }
   }
 
   async function exportFile(type: 'pdf' | 'pptx') {
@@ -158,16 +359,60 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
     setExporting(null)
   }
 
+  // Attempts to copy an already-validated portal URL to the clipboard.
+  // Shared by shareQBR() (fresh token) and retryCopyShareUrl() (reusing a
+  // previously validated shareUrl) so a clipboard-only retry never re-calls
+  // the share API for a new token.
+  async function copyShareUrl(url: string) {
+    if (shareCopyInFlight.current) return
+    shareCopyInFlight.current = true
+    setCopyingShareUrl(true)
+    if (copiedTimer.current) {
+      clearTimeout(copiedTimer.current)
+      copiedTimer.current = null
+    }
+    setCopied(false)
+    setShareError(null)
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      copiedTimer.current = setTimeout(() => {
+        setCopied(false)
+        copiedTimer.current = null
+      }, 3000)
+    } catch {
+      setShareError(SHARE_CLIPBOARD_FAILURE_MESSAGE)
+    } finally {
+      shareCopyInFlight.current = false
+      setCopyingShareUrl(false)
+    }
+  }
+
   async function shareQBR() {
+    if (sharing || shareCopyInFlight.current) return
+    setShareError(null)
     setSharing(true)
-    const res  = await fetch(`/api/qbrs/${params.qbrId}/share`, { method: 'POST' })
-    const data = await res.json()
-    const url  = `${window.location.origin}/portal/${data.token}`
-    setShareUrl(url)
-    await navigator.clipboard.writeText(url)
-    setCopied(true)
-    setSharing(false)
-    setTimeout(() => setCopied(false), 3000)
+    try {
+      const result = await requestJson<{ token: string }>(`/api/qbrs/${params.qbrId}/share`, {
+        method: 'POST',
+      })
+      if (!result.ok || !isValidShareToken(result.data?.token)) {
+        setShareError(SHARE_API_FAILURE_MESSAGE)
+        return
+      }
+      const url = `${window.location.origin}/portal/${result.data.token.trim()}`
+      setShareUrl(url)
+      await copyShareUrl(url)
+    } finally {
+      setSharing(false)
+    }
+  }
+
+  // Reuses the already-validated shareUrl — never requests a new token just
+  // to retry a failed clipboard copy.
+  async function retryCopyShareUrl() {
+    if (!shareUrl || sharing || shareCopyInFlight.current) return
+    await copyShareUrl(shareUrl)
   }
 
   if (!qbr) return <div className="p-8 text-gray-400 text-sm">Loading...</div>
@@ -190,12 +435,49 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
           <h1 className="text-xl font-bold text-navy-800">Q{qbr.quarter} {qbr.year} QBR</h1>
         </div>
 
-        {/* Save indicator */}
-        <div className="text-xs text-gray-400 flex items-center gap-1.5 h-5">
-          {saveState === 'saving' && <><Loader2 size={12} className="animate-spin" /> Saving...</>}
-          {saveState === 'saved'  && <><Check size={12} className="text-green-500" /> Saved</>}
-        </div>
+        {/* Save indicator — only mounted while there's something to
+            announce, so the role="status" region is never permanently
+            present but empty. */}
+        {(saveState === 'saving' || saveState === 'saved') && (
+          <div
+            role="status"
+            aria-live="polite"
+            aria-busy={saveState === 'saving'}
+            className="text-xs text-gray-400 flex items-center gap-1.5 h-5"
+          >
+            {saveState === 'saving' && <><Loader2 size={12} className="animate-spin" aria-hidden="true" /> Saving...</>}
+            {saveState === 'saved'  && <><Check size={12} className="text-green-500" aria-hidden="true" /> Saved</>}
+          </div>
+        )}
       </div>
+
+      {/* ── Autosave failure — a save attempt (including one that failed to
+          serialize) never rolls back the visible edit or claims it was
+          persisted; the edited content stays exactly as the user left it.
+          Retry save re-runs the same serialize → enqueue → version → result
+          flow against the CURRENT rawSlides, never a cached body that could
+          belong to an older edit — so Retry always targets the edit
+          actually on screen, genuinely retryable even after a serialization
+          failure. Mounted while there's a failure to announce OR a retry is
+          in flight, so the Retry button stays visible (and observably
+          disabled/busy) through the whole retry attempt instead of
+          disappearing the instant it's clicked — saveError itself is
+          cleared as soon as the retry starts. role="alert" wraps only the
+          actual failure text, never an empty region. ── */}
+      {(saveError || retryingSave) && (
+        <div className="text-xs text-red-600 mb-2 flex items-center gap-2">
+          {saveError && <span role="alert">{saveError}</span>}
+          <button
+            onClick={retrySave}
+            disabled={retryingSave || saveState === 'saving'}
+            aria-busy={retryingSave}
+            aria-label="Retry save"
+            className="underline"
+          >
+            {retryingSave ? 'Retrying...' : 'Retry save'}
+          </button>
+        </div>
+      )}
 
       {/* ── Cover ── */}
       {/* Client name, quarter/year, and health score/status always come from
@@ -224,11 +506,21 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
       <div className="card p-4 mb-6 flex items-center justify-between">
         <p className="text-sm text-gray-600">Export this QBR to share with your client.</p>
         <div className="flex gap-3">
-          <button onClick={() => setShowEmailInput(v => !v)} className="btn-secondary text-sm py-2">
-            {sent ? <><Check size={14} className="text-green-500" /> Sent!</> : <><Mail size={14} /> Send to Client</>}
+          <button onClick={() => setShowEmailInput(v => !v)} disabled={sending} className="btn-secondary text-sm py-2">
+            <Mail size={14} /> Send to Client
           </button>
-          <button onClick={shareQBR} disabled={sharing} className="btn-secondary text-sm py-2">
-            {sharing ? <Loader2 size={14} className="animate-spin" /> : copied ? <><Check size={14} className="text-green-500" /> Copied!</> : <><Share2 size={14} /> Share Link</>}
+          <button
+            onClick={shareQBR}
+            disabled={sharing || copyingShareUrl}
+            aria-busy={sharing || copyingShareUrl}
+            aria-label="Share Link"
+            className="btn-secondary text-sm py-2"
+          >
+            {sharing
+              ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+              : copied
+              ? <><Check size={14} className="text-green-500" aria-hidden="true" /> Copied!</>
+              : <><Share2 size={14} aria-hidden="true" /> Share Link</>}
           </button>
           <button onClick={() => exportFile('pdf')} disabled={!!exporting} className="btn-secondary text-sm py-2">
             {exporting === 'pdf' ? 'Exporting...' : <><Download size={14} /> PDF</>}
@@ -239,25 +531,86 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
         </div>
       </div>
 
-      {/* ── Email input ── */}
-      {showEmailInput && (
+      {/* ── Send status — accessible, and rendered outside the email panel so
+          it persists (and stays announced) even after the panel closes on
+          success. Only mounted while there's something to announce, so the
+          role="status" region is never permanently present but empty. ── */}
+      {(sending || sent) && (
+        <div role="status" aria-live="polite" className="text-xs text-gray-500 h-4 mb-1 flex items-center gap-1.5">
+          {sending && <><Loader2 size={12} className="animate-spin" aria-hidden="true" /> Sending to client...</>}
+          {!sending && sent && <><Check size={12} className="text-green-500" aria-hidden="true" /> Sent to client!</>}
+        </div>
+      )}
+
+      {/* ── Share status — same accessible pattern as Send status: only
+          mounted while there's something to announce. ── */}
+      {(sharing || copyingShareUrl || copied) && (
+        <div role="status" aria-live="polite" className="text-xs text-gray-500 h-4 mb-1 flex items-center gap-1.5">
+          {sharing && <><Loader2 size={12} className="animate-spin" aria-hidden="true" /> Creating share link...</>}
+          {!sharing && copyingShareUrl && <><Loader2 size={12} className="animate-spin" aria-hidden="true" /> Copying share link...</>}
+          {!sharing && !copyingShareUrl && copied && <><Check size={12} className="text-green-500" aria-hidden="true" /> Copied!</>}
+        </div>
+      )}
+
+      {/* ── Share failure — covers both an invalid/failed API result and a
+          failed clipboard write; the two are distinguished by message text
+          (see SHARE_API_FAILURE_MESSAGE / SHARE_CLIPBOARD_FAILURE_MESSAGE). ── */}
+      {shareError && (
+        <p role="alert" className="text-xs text-red-600 mb-2">{shareError}</p>
+      )}
+
+      {/* ── Manual share-link fallback — shown whenever a token has been
+          validated, so the link survives a clipboard failure (and stays
+          available afterward for a manual copy) without ever requesting a
+          new token just to retry the copy. ── */}
+      {shareUrl && (
         <div className="card p-4 mb-4 flex items-center gap-3">
-          <Mail size={16} className="text-gray-400 flex-shrink-0" />
           <input
-            type="email"
-            placeholder="Client email address"
-            value={sendEmail}
-            onChange={e => setSendEmail(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && sendToClient()}
-            className="flex-1 text-sm border border-gray-200 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-navy-800"
+            type="text"
+            readOnly
+            aria-label="Share link URL"
+            value={shareUrl}
+            onFocus={e => e.target.select()}
+            className="flex-1 text-sm border border-gray-200 rounded px-3 py-2 bg-gray-50 text-gray-700"
           />
           <button
-            onClick={sendToClient}
-            disabled={sending || !sendEmail}
-            className="btn-primary text-sm py-2 px-4"
+            onClick={retryCopyShareUrl}
+            disabled={sharing || copyingShareUrl}
+            aria-busy={copyingShareUrl}
+            aria-label="Copy share link to clipboard"
+            className="btn-secondary text-sm py-2 px-4"
           >
-            {sending ? 'Sending...' : 'Send'}
+            <Copy size={14} aria-hidden="true" /> Copy
           </button>
+        </div>
+      )}
+
+      {/* ── Email input ── */}
+      {showEmailInput && (
+        <div className="card p-4 mb-4 flex flex-col gap-3">
+          <div className="flex items-center gap-3">
+            <Mail size={16} className="text-gray-400 flex-shrink-0" />
+            <input
+              type="email"
+              placeholder="Client email address"
+              aria-label="Client email address"
+              value={sendEmail}
+              onChange={e => setSendEmail(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && sendToClient()}
+              className="flex-1 text-sm border border-gray-200 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-navy-800"
+            />
+            <button
+              onClick={sendToClient}
+              disabled={sending || !sendEmail}
+              aria-busy={sending}
+              className="btn-primary text-sm py-2 px-4"
+            >
+              {sending ? 'Sending...' : 'Send'}
+            </button>
+          </div>
+          {sendError && (
+            <p role="alert" className="text-xs text-red-600">{sendError}</p>
+          )}
         </div>
       )}
 
