@@ -3,6 +3,7 @@ Font.registerHyphenationCallback(word => [word])
 import React from 'react'
 import type { QBRSlide, QBRInput } from '@/lib/anthropic'
 import { computeHealthScore } from '@/lib/health-score'
+import { CONFIDENTIALITY_STATEMENT } from '@/lib/export-constants'
 
 const NAVY = '#0a1634'
 const GOLD = '#c9a02a'
@@ -236,7 +237,7 @@ function ClosingPage({ mspName, clientName, quarter, year, logoUrl, isWhiteLabel
         <Text style={styles.closingSubtitle}>{isWhiteLabel ? `${sanitize(mspName)} - Your Strategic IT Partner` : 'Generated with QBR Deck'}</Text>
         <View style={styles.closingGoldBar} />
         <Text style={styles.closingBody}>
-          {"Let's schedule your Q" + (Number(quarter) === 4 ? 1 : Number(quarter) + 1) + " planning session to build on this quarter's progress.\n\nThis report was prepared exclusively for " + sanitize(clientName) + " and is confidential."}
+          {"Let's schedule your Q" + (Number(quarter) === 4 ? 1 : Number(quarter) + 1) + " planning session to build on this quarter's progress.\n\n" + CONFIDENTIALITY_STATEMENT(sanitize(clientName))}
         </Text>
       </View>
     </Page>
