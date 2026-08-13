@@ -54,23 +54,41 @@ enum StripeEventStatus {
   FAILED
 }
 
+enum OnboardingStatus {
+  IN_PROGRESS
+  COMPLETED
+  EXEMPT
+}
+
+enum OnboardingStep {
+  WELCOME
+  WORKSPACE_NAME
+  FIRST_CLIENT
+  FIRST_QBR
+  REVIEW_QBR
+  EXPORT_QBR
+  SHARE_QBR
+  COMPLETE
+}
+
 // ─── Workspace ────────────────────────────────────────────────────────────────
 
 model Workspace {
-  id           String            @id @default(cuid())
+  id           String               @id @default(cuid())
   name         String
-  slug         String?           @unique
+  slug         String?              @unique
   logoUrl      String?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
   deletedAt    DateTime? // NEW — soft delete / archive
   clients      Client[]
   qbrs         QBR[] // NEW — direct workspace→QBR relation
-  exportEvents ExportEvent[]     @relation("WorkspaceExports")
+  exportEvents ExportEvent[]        @relation("WorkspaceExports")
   shareLinks   ShareLink[] // NEW
   subscription Subscription?
   invites      WorkspaceInvite[]
   members      WorkspaceMember[]
+  onboarding   WorkspaceOnboarding? // NEW
 
   @@index([deletedAt])
 }
@@ -78,21 +96,21 @@ model Workspace {
 // ─── User ─────────────────────────────────────────────────────────────────────
 
 model User {
-  id             String            @id @default(cuid())
-  clerkId        String            @unique
-  email          String            @unique
-  name           String?
-  avatarUrl      String?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  clientsCreated Client[]          @relation("ClientCreatedBy")
-  exportEvents   ExportEvent[]     @relation("UserExports")
-  qbrsCreated    QBR[]             @relation("CreatedBy")
-  qbrsExported   QBR[]             @relation("ExportedBy")
-  invitesSent    WorkspaceInvite[] @relation("InvitedBy")
+  id              String            @id @default(cuid())
+  clerkId         String            @unique
+  email           String            @unique
+  name            String?
+  avatarUrl       String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  clientsCreated  Client[]          @relation("ClientCreatedBy")
+  exportEvents    ExportEvent[]     @relation("UserExports")
+  qbrsCreated     QBR[]             @relation("CreatedBy")
+  qbrsExported    QBR[]             @relation("ExportedBy")
+  invitesSent     WorkspaceInvite[] @relation("InvitedBy")
   invitesAccepted WorkspaceInvite[] @relation("AcceptedBy") // NEW
-  shareLinks     ShareLink[] // NEW
-  memberships    WorkspaceMember[]
+  shareLinks      ShareLink[] // NEW
+  memberships     WorkspaceMember[]
 }
 
 // ─── WorkspaceMember ──────────────────────────────────────────────────────────
@@ -130,12 +148,12 @@ model WorkspaceInvite {
   acceptedByUserId String?
   revokedAt        DateTime?
 
-  invitedBy   User      @relation("InvitedBy", fields: [invitedById], references: [id])
-  acceptedBy  User?     @relation("AcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull) // NEW
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy  User      @relation("InvitedBy", fields: [invitedById], references: [id])
+  acceptedBy User?     @relation("AcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull) // NEW
+  workspace  Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  // NOTE: removed redundant @@index([token]) — `token @unique` already indexes it.
 
   @@unique([workspaceId, email])
-  // NOTE: removed redundant @@index([token]) — `token @unique` already indexes it.
 }
 
 // ─── Subscription ─────────────────────────────────────────────────────────────
@@ -157,10 +175,10 @@ model Subscription {
   // DEPRECATED — ExportEvent is the source of truth for exports.
   // Retained temporarily for migration compatibility; remove after confirming
   // no code path reads/writes it. Do NOT treat as authoritative.
-  exportedQbrIds       String    @default("[]")
+  exportedQbrIds String @default("[]")
 
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   stripeStatus             String?
   stripeCurrentPeriodStart DateTime?
@@ -173,14 +191,14 @@ model Subscription {
 // ─── Client ───────────────────────────────────────────────────────────────────
 
 model Client {
-  id           String        @id @default(cuid())
-  workspaceId  String
-  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   // CHANGED — nullable + SetNull so deleting a creator never destroys/blocks
   // historical business records.
-  createdById  String?
-  createdBy    User?         @relation("ClientCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdById String?
+  createdBy   User?   @relation("ClientCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
 
   name         String
   industry     String?
@@ -189,12 +207,18 @@ model Client {
   userCount    Int?
   notes        String?
   nextQbrDate  DateTime?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
   deletedAt    DateTime? // NEW — soft delete / archive
 
   qbrs         QBR[]
   exportEvents ExportEvent[] @relation("ClientExports")
+
+  // NEW — reverse side of WorkspaceOnboarding.onboardingClient (anchor to the
+  // exact Client created during onboarding). Singular because
+  // onboardingClientId is @unique — at most one onboarding row may anchor to
+  // a given Client.
+  onboardingAnchor WorkspaceOnboarding? @relation("OnboardingClientAnchor")
 
   // NEW — composite target so QBR can enforce same-workspace via composite FK.
   @@unique([id, workspaceId])
@@ -213,35 +237,35 @@ model QBR {
   // CHANGED — composite FK enforces QBR.workspaceId == Client.workspaceId at the
   // database level. A QBR cannot reference a Client from another workspace.
   // onDelete: Restrict — soft-delete clients instead of cascading.
-  client      Client @relation(fields: [clientId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+  client Client @relation(fields: [clientId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
 
   // NEW — direct workspace relation (Restrict; workspaces are soft-deleted).
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
 
   createdById  String?
-  createdBy    User?    @relation("CreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdBy    User?   @relation("CreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   exportedById String?
-  exportedBy   User?    @relation("ExportedBy", fields: [exportedById], references: [id], onDelete: SetNull)
+  exportedBy   User?   @relation("ExportedBy", fields: [exportedById], references: [id], onDelete: SetNull)
 
-  quarter               String
-  year                  Int
-  status                QBRStatus     @default(DRAFT)
-  tickets               Int?
-  avgResolutionHrs      Float?
-  uptimePct             Float?
-  patchCompliancePct    Float?
-  securityIncidents     Int?
-  usersSupported        Int?
-  ticketCategories      String?
-  wins                  String?
-  upsellOpportunities   String?
-  slides                Json?
-  summary               String?
+  quarter             String
+  year                Int
+  status              QBRStatus @default(DRAFT)
+  tickets             Int?
+  avgResolutionHrs    Float?
+  uptimePct           Float?
+  patchCompliancePct  Float?
+  securityIncidents   Int?
+  usersSupported      Int?
+  ticketCategories    String?
+  wins                String?
+  upsellOpportunities String?
+  slides              Json?
+  summary             String?
 
   // DEPRECATED — superseded by ShareLink. Kept temporarily for transition so
   // existing links keep working. Remove only after portal + send/share routes
   // use ShareLink exclusively.
-  shareToken            String?       @unique
+  shareToken String? @unique
 
   rawMetrics            Json?
   healthScore           Int?
@@ -257,12 +281,17 @@ model QBR {
   supersededAt DateTime?
   isCurrent    Boolean   @default(true)
 
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  deletedAt    DateTime? // NEW — soft delete / archive
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? // NEW — soft delete / archive
 
   exportEvents ExportEvent[] @relation("QBRExports")
   shareLinks   ShareLink[] // NEW
+
+  // NEW — reverse side of WorkspaceOnboarding.onboardingQbr (anchor to the
+  // exact QBR created during onboarding). Singular because onboardingQbrId is
+  // @unique — at most one onboarding row may anchor to a given QBR.
+  onboardingAnchor WorkspaceOnboarding? @relation("OnboardingQbrAnchor")
 
   // Composite target so ShareLink (and any child) can enforce same-workspace
   // via composite FK [qbrId, workspaceId] -> [id, workspaceId].
@@ -279,16 +308,16 @@ model QBR {
 // the database stores a SHA-256 hash. Tokens are CSPRNG-generated (>=32 bytes).
 
 model ShareLink {
-  id              String   @id @default(cuid())
-  tokenHash       String   @unique // SHA-256 of the raw token; raw token never stored
+  id              String    @id @default(cuid())
+  tokenHash       String    @unique // SHA-256 of the raw token; raw token never stored
   qbrId           String
   workspaceId     String
   createdByUserId String?
-  createdAt       DateTime @default(now())
+  createdAt       DateTime  @default(now())
   expiresAt       DateTime?
   revokedAt       DateTime?
   lastViewedAt    DateTime?
-  viewCount       Int      @default(0)
+  viewCount       Int       @default(0)
 
   // Composite FK — a ShareLink cannot point at a QBR from another workspace.
   qbr       QBR       @relation(fields: [qbrId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
@@ -355,4 +384,52 @@ model StripeEvent {
   @@index([status])
   @@index([eventType])
   @@index([receivedAt])
+}
+
+// ─── WorkspaceOnboarding ────────────────────────────────────────────────────
+// Schema foundation only (P2 PR1). No rows are created or backfilled by this
+// migration; enrollment/backfill is a later PR. One row per Workspace once a
+// row exists. Client/QBR anchors point at the exact records created during
+// the onboarding journey (never "any"/"latest" record in the workspace) and
+// use SetNull on delete so the anchor can go missing without destroying the
+// onboarding record itself — reconciliation logic (later PR) can detect a
+// null anchor and recover instead of the FK silently cascading state away.
+
+model WorkspaceOnboarding {
+  id          String @id @default(cuid())
+  workspaceId String @unique
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // No default — status must always be assigned explicitly by the caller
+  // (EXEMPT during legacy backfill, IN_PROGRESS during enrollment, COMPLETED
+  // at Finish). The database must never silently default an omitted status
+  // into enrollment.
+  status      OnboardingStatus
+  currentStep OnboardingStep?
+
+  // @unique — one exact Client/QBR anchors at most one onboarding journey.
+  onboardingClientId String? @unique
+  onboardingClient   Client? @relation("OnboardingClientAnchor", fields: [onboardingClientId], references: [id], onDelete: SetNull)
+
+  onboardingQbrId String? @unique
+  onboardingQbr   QBR?    @relation("OnboardingQbrAnchor", fields: [onboardingQbrId], references: [id], onDelete: SetNull)
+
+  // Durable retry identity for the future onboarding-aware Client/QBR create
+  // operations, kept independent per step (per contract). Intentionally NOT
+  // globally unique: retry/idempotency resolution must always be scoped
+  // through the authenticated WorkspaceOnboarding row (already unique via
+  // workspaceId), never used to discover an onboarding record globally
+  // before workspace authorization.
+  clientStepIdempotencyKey String?
+  qbrStepIdempotencyKey    String?
+
+  exemptReason String?
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([status])
 }
