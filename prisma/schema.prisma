@@ -111,6 +111,12 @@ model User {
   invitesAccepted WorkspaceInvite[] @relation("AcceptedBy") // NEW
   shareLinks      ShareLink[] // NEW
   memberships     WorkspaceMember[]
+
+  // NEW — reverse side of WorkspaceOnboarding.onboardingOwner (the durable
+  // creator/eligible-owner identity anchor; independent of TeamRole, since an
+  // invited member can also be granted OWNER). A User may anchor more than
+  // one onboarding record over time, so this is a list, not a unique 1:1.
+  onboardingOwnerOf WorkspaceOnboarding[] @relation("OnboardingOwner")
 }
 
 // ─── WorkspaceMember ──────────────────────────────────────────────────────────
@@ -414,6 +420,22 @@ model WorkspaceOnboarding {
 
   onboardingQbrId String? @unique
   onboardingQbr   QBR?    @relation("OnboardingQbrAnchor", fields: [onboardingQbrId], references: [id], onDelete: SetNull)
+
+  // NEW — durable creator/eligible-owner identity anchor. TeamRole.OWNER
+  // alone is not sufficient: an existing OWNER can invite another member as
+  // OWNER (see WorkspaceInvite/canGrantRole), so role membership does not
+  // durably identify who actually started this onboarding journey. Nullable
+  // and not @unique: existing EXEMPT rows (backfilled by PR 2) have no
+  // recorded creator and stay NULL — no historical inference, no backfill —
+  // and a single User may anchor more than one WorkspaceOnboarding over time
+  // if they create multiple workspaces. onDelete: SetNull so the anchor can
+  // go missing (e.g. the creator's membership/account is removed) without
+  // destroying the onboarding record itself, mirroring onboardingClientId/
+  // onboardingQbrId above. Population (new IN_PROGRESS rows) and consumption
+  // (the interception decision) are runtime concerns for a later PR — this
+  // migration only adds the column/constraint.
+  onboardingOwnerUserId String?
+  onboardingOwner       User?   @relation("OnboardingOwner", fields: [onboardingOwnerUserId], references: [id], onDelete: SetNull)
 
   // Durable retry identity for the future onboarding-aware Client/QBR create
   // operations, kept independent per step (per contract). Intentionally NOT
