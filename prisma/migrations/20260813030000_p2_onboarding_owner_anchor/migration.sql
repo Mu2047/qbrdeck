@@ -1,0 +1,42 @@
+-- ============================================================================
+-- P2 Onboarding PR 3 — Owner Identity Anchor (SCHEMA ONLY)
+--
+-- Purpose: add the durable creator/eligible-owner identity anchor to
+-- WorkspaceOnboarding. TeamRole.OWNER alone is not a sufficient eligibility
+-- signal: an existing OWNER can invite another member with role OWNER (see
+-- app/api/workspace/invite/route.ts's canGrantRole check), so a workspace can
+-- durably have more than one OWNER-role member, and role alone cannot
+-- distinguish the actual onboarding-eligible creator from an invited OWNER.
+--
+-- This migration performs NO data mutation of any kind. It does not backfill
+-- onboardingOwnerUserId for any existing row (EXEMPT or otherwise), does not
+-- infer a historical creator, does not touch WorkspaceOnboarding.status or
+-- currentStep, and does not touch Workspace/WorkspaceMember/User data. Every
+-- existing WorkspaceOnboarding row (including the EXEMPT rows backfilled by
+-- 20260813025558_p2_onboarding_existing_workspace_exemption) simply gains a
+-- new column that defaults to NULL for every existing row, since the column
+-- carries no PostgreSQL-level DEFAULT and no UPDATE statement follows it.
+--
+-- Nullable, not unique:
+--   - Nullable because existing EXEMPT rows have no recorded creator and must
+--     stay NULL (no historical inference), and because onDelete: SetNull
+--     requires a nullable target — the anchor can go missing (e.g. the
+--     creator's membership/account is later removed) without destroying the
+--     onboarding record itself, mirroring the onDelete: SetNull behavior
+--     already established for onboardingClientId/onboardingQbrId in
+--     20260812024918_p2_onboarding_schema_foundation.
+--   - Not unique because a single User may legitimately anchor more than one
+--     WorkspaceOnboarding row over time, if that user creates multiple
+--     workspaces.
+--
+-- Population of this column (new IN_PROGRESS rows) and consumption of it (the
+-- interception decision that distinguishes the eligible owner from an
+-- invited member) are runtime concerns for a later PR — this migration only
+-- adds the column and its foreign-key constraint.
+-- ============================================================================
+
+-- AlterTable
+ALTER TABLE "WorkspaceOnboarding" ADD COLUMN "onboardingOwnerUserId" TEXT;
+
+-- AddForeignKey
+ALTER TABLE "WorkspaceOnboarding" ADD CONSTRAINT "WorkspaceOnboarding_onboardingOwnerUserId_fkey" FOREIGN KEY ("onboardingOwnerUserId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
