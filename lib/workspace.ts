@@ -1,6 +1,6 @@
 import { auth } from '@clerk/nextjs/server'
 import { prisma } from '@/lib/prisma'
-import { TeamRole } from '@prisma/client'
+import { TeamRole, OnboardingStatus, OnboardingStep } from '@prisma/client'
 
 export type WorkspaceContext = {
   workspaceId: string
@@ -23,6 +23,13 @@ export type WorkspaceContext = {
     stripeCustomerId: string
     stripeSubscriptionId?: string | null
   } | null
+  // Nullable: a workspace may have no onboarding row at all (self-heal failed,
+  // or is only attempted on the existing-membership path — never fabricated).
+  onboarding: {
+    status: OnboardingStatus
+    currentStep: OnboardingStep | null
+    onboardingOwnerUserId: string | null
+  } | null
 }
 
 export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
@@ -34,7 +41,7 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
     where: { clerkId },
     include: {
       memberships: {
-        include: { workspace: { include: { subscription: true } } },
+        include: { workspace: { include: { subscription: true, onboarding: true } } },
         orderBy: { joinedAt: 'asc' },
         take: 1,
       },
@@ -59,7 +66,7 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
     },
     include: {
       memberships: {
-        include: { workspace: { include: { subscription: true } } },
+        include: { workspace: { include: { subscription: true, onboarding: true } } },
         orderBy: { joinedAt: 'asc' },
         take: 1,
       },
@@ -72,6 +79,33 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
   if (user.memberships.length > 0) {
     const membership = user.memberships[0]
     const workspace  = membership.workspace
+
+    // Durable self-heal: an existing workspace/member resolved above may
+    // predate onboarding entirely (backfill gap). This branch only ever
+    // fires for an EXISTING workspace — never for the just-created workspace
+    // below, which always gets its onboarding row nested in the same create.
+    // Narrowly scoped try/catch: an operational DB failure here must not
+    // deny the request or fabricate onboarding state — it leaves onboarding
+    // null and lets the rest of the already-resolved context through.
+    let onboarding = workspace.onboarding
+    if (!onboarding) {
+      try {
+        onboarding = await prisma.workspaceOnboarding.upsert({
+          where: { workspaceId: workspace.id },
+          update: {},
+          create: {
+            workspaceId: workspace.id,
+            status: 'EXEMPT',
+            currentStep: null,
+            exemptReason: 'post_backfill_pre_activation_gap',
+            onboardingOwnerUserId: null,
+          },
+        })
+      } catch {
+        onboarding = null
+      }
+    }
+
     return {
       workspaceId: workspace.id,
       workspace: {
@@ -95,10 +129,21 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
             stripeSubscriptionId: workspace.subscription.stripeSubscriptionId,
           }
         : null,
+      onboarding: onboarding
+        ? {
+            status:                onboarding.status,
+            currentStep:           onboarding.currentStep,
+            onboardingOwnerUserId: onboarding.onboardingOwnerUserId,
+          }
+        : null,
     }
   }
 
-  // No workspace yet — create one
+  // No workspace yet — create one. Workspace + OWNER WorkspaceMember +
+  // WorkspaceOnboarding(IN_PROGRESS, WELCOME, creator anchor) must commit as
+  // a single atomic nested write: if the onboarding create fails, the whole
+  // workspace.create must fail with it, so we never end up with a workspace
+  // that has an OWNER but no onboarding enrollment.
   const workspace = await prisma.workspace.create({
     data: {
       name: user.name ?? user.email.split('@')[0] ?? 'My Workspace',
@@ -108,8 +153,16 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
           role:   'OWNER',
         },
       },
+      onboarding: {
+        create: {
+          status:                'IN_PROGRESS',
+          currentStep:           'WELCOME',
+          onboardingOwnerUserId: user.id,
+          startedAt:             new Date(),
+        },
+      },
     },
-    include: { subscription: true },
+    include: { subscription: true, onboarding: true },
   })
 
   return {
@@ -125,6 +178,13 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
       userId: user.id,
     },
     subscription: null,
+    onboarding: workspace.onboarding
+      ? {
+          status:                workspace.onboarding.status,
+          currentStep:           workspace.onboarding.currentStep,
+          onboardingOwnerUserId: workspace.onboarding.onboardingOwnerUserId,
+        }
+      : null,
   }
 }
 
