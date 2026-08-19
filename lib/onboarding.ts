@@ -33,3 +33,67 @@ export function shouldInterceptOnboarding(
 
   return onboarding.onboardingOwnerUserId === currentUserId
 }
+
+// Deterministic, exhaustive step<->slug mapping for all eight persisted
+// steps. Kept here (not in the route layer) so both the route and its tests
+// import the same real mapping rather than a regex-matched mirror of it.
+const STEP_SLUGS: Record<OnboardingStep, string> = {
+  WELCOME:        'welcome',
+  WORKSPACE_NAME: 'workspace-name',
+  FIRST_CLIENT:   'first-client',
+  FIRST_QBR:      'first-qbr',
+  REVIEW_QBR:     'review-qbr',
+  EXPORT_QBR:     'export-qbr',
+  SHARE_QBR:      'share-qbr',
+  COMPLETE:       'complete',
+}
+
+const SLUG_TO_STEP: Record<string, OnboardingStep> = Object.fromEntries(
+  (Object.entries(STEP_SLUGS) as [OnboardingStep, string][]).map(([step, slug]) => [slug, step])
+)
+
+export function stepToSlug(step: OnboardingStep): string {
+  return STEP_SLUGS[step]
+}
+
+// Returns undefined for any string that isn't one of the eight known slugs —
+// callers (the route) must treat that as "invalid route", not "valid step".
+export function slugToStep(slug: string): OnboardingStep | undefined {
+  return SLUG_TO_STEP[slug]
+}
+
+// Steps with a rendered onboarding screen in THIS deployment. Deliberately a
+// narrow, hand-maintained allowlist rather than "all OnboardingStep values"
+// — a persisted currentStep can legitimately be ahead of what this specific
+// deployment has shipped a screen for (e.g. the advance API already knows
+// how to move a row to FIRST_CLIENT before the FIRST_CLIENT screen exists).
+// Extend this set only when the corresponding screen ships in the same PR.
+const IMPLEMENTED_STEPS: ReadonlySet<OnboardingStep> = new Set<OnboardingStep>([
+  'WELCOME',
+  'WORKSPACE_NAME',
+])
+
+export function isStepImplemented(step: OnboardingStep): boolean {
+  return IMPLEMENTED_STEPS.has(step)
+}
+
+// Fixed, exhaustive transition table for the advance API in THIS deployment
+// slice. Intentionally not a generic state machine over all OnboardingStep
+// values — adding a transition requires an explicit new entry, never a loop.
+const ADVANCE_TRANSITIONS = {
+  WORKSPACE_NAME: 'WELCOME',
+  FIRST_CLIENT:   'WORKSPACE_NAME',
+} as const satisfies Record<string, OnboardingStep>
+
+export type AdvanceableStep = keyof typeof ADVANCE_TRANSITIONS
+
+export function isAdvanceableStep(toStep: string): toStep is AdvanceableStep {
+  return toStep === 'WORKSPACE_NAME' || toStep === 'FIRST_CLIENT'
+}
+
+// The exact persisted currentStep an onboarding row must already be at
+// before `toStep` may be written. Only called after isAdvanceableStep has
+// narrowed toStep, so the lookup can never miss.
+export function requiredFromStepFor(toStep: AdvanceableStep): OnboardingStep {
+  return ADVANCE_TRANSITIONS[toStep]
+}
