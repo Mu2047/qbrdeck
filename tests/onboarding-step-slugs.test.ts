@@ -65,15 +65,14 @@ describe('stepToSlug / slugToStep — round-trip', () => {
 })
 
 describe('isStepImplemented — allowlist for this deployment', () => {
-  it('WELCOME is implemented', () => {
-    expect(isStepImplemented('WELCOME')).toBe(true)
-  })
+  it.each(['WELCOME', 'WORKSPACE_NAME', 'FIRST_CLIENT', 'FIRST_QBR'] as OnboardingStep[])(
+    '%s is implemented',
+    (step) => {
+      expect(isStepImplemented(step)).toBe(true)
+    }
+  )
 
-  it('WORKSPACE_NAME is implemented', () => {
-    expect(isStepImplemented('WORKSPACE_NAME')).toBe(true)
-  })
-
-  it.each(['FIRST_CLIENT', 'FIRST_QBR', 'REVIEW_QBR', 'EXPORT_QBR', 'SHARE_QBR', 'COMPLETE'] as OnboardingStep[])(
+  it.each(['REVIEW_QBR', 'EXPORT_QBR', 'SHARE_QBR', 'COMPLETE'] as OnboardingStep[])(
     '%s is not implemented in this deployment',
     (step) => {
       expect(isStepImplemented(step)).toBe(false)

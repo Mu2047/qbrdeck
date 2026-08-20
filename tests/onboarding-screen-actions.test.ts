@@ -16,6 +16,8 @@ function readSourceLF(relativePath: string): string {
 
 const welcomeSource = readSourceLF('app/onboarding/_screens/welcome.tsx')
 const workspaceNameSource = readSourceLF('app/onboarding/_screens/workspace-name.tsx')
+const firstClientSource = readSourceLF('app/onboarding/_screens/first-client.tsx')
+const firstQbrSource = readSourceLF('app/onboarding/_screens/first-qbr.tsx')
 
 describe('Welcome screen — advances to WORKSPACE_NAME, then navigates only on confirmed success', () => {
   it('POSTs /api/onboarding/advance with toStep: WORKSPACE_NAME', () => {
@@ -98,4 +100,96 @@ describe('Workspace Name screen — PATCH workspace name, then advance, in stric
   it('is prefilled from the server-provided initialName prop', () => {
     expect(workspaceNameSource).toMatch(/useState\(initialName\)/)
   })
+})
+
+describe('First Client screen — no render-time key writes, no browser-authority fields', () => {
+  it('the idempotency key ref is seeded from the persisted prop, not generated eagerly', () => {
+    expect(firstClientSource).toMatch(/const keyRef = useRef<string \| null>\(persistedKey\)/)
+  })
+
+  it('crypto.randomUUID() is only reachable from inside ensureKey(), called lazily from a submit handler — never at component-body/render scope', () => {
+    const randomUUIDOccurrences = firstClientSource.match(/crypto\.randomUUID\(\)/g) ?? []
+    expect(randomUUIDOccurrences.length).toBe(1)
+    expect(firstClientSource).toMatch(/function ensureKey\(\) \{\s*if \(!keyRef\.current\) keyRef\.current = crypto\.randomUUID\(\)/)
+  })
+
+  it('attach mode POSTs only { mode: "attach", retryKey } — no clientId/existingClientId/workspaceId in the body', () => {
+    expect(firstClientSource).toMatch(/body:\s*JSON\.stringify\(\{ mode: 'attach', retryKey \}\)/)
+  })
+
+  it('create mode never includes clientId, existingClientId, workspaceId, or userId in its request body', () => {
+    const submitCreateMatch = firstClientSource.match(/async function submitCreate\(\) \{[\s\S]*?\n  \}/)
+    expect(submitCreateMatch).not.toBeNull()
+    const body = submitCreateMatch?.[0] ?? ''
+    expect(body).not.toMatch(/clientId/)
+    expect(body).not.toMatch(/existingClientId/)
+    expect(body).not.toMatch(/workspaceId/)
+    expect(body).not.toMatch(/userId/)
+  })
+
+  it('navigates to /onboarding/first-qbr after a confirmed successful response, for both attach and create', () => {
+    const navOccurrences = firstClientSource.match(/router\.push\('\/onboarding\/first-qbr'\)/g) ?? []
+    expect(navOccurrences.length).toBe(2)
+  })
+
+  it('the 2+ existing-client state renders no fetch call and only a "Return to dashboard" navigation', () => {
+    const multiClientBlock = firstClientSource.match(/if \(existingClientCount > 1\) \{[\s\S]*?\n  \}/)
+    expect(multiClientBlock).not.toBeNull()
+    const block = multiClientBlock?.[0] ?? ''
+    expect(block).not.toMatch(/fetch\(/)
+    expect(block).toMatch(/router\.push\('\/dashboard'\)/)
+    expect(block).toMatch(/Choose a client later/)
+  })
+
+  it('the single-existing-client state renders an attach action, not a create form', () => {
+    const soleClientBlock = firstClientSource.match(/if \(existingClientCount === 1 && soleExistingClientName\) \{[\s\S]*?\n  \}/)
+    expect(soleClientBlock).not.toBeNull()
+    const block = soleClientBlock?.[0] ?? ''
+    expect(block).toMatch(/onClick=\{submitAttach\}/)
+    expect(block).not.toMatch(/onClick=\{submitCreate\}/)
+  })
+
+  it('guards against duplicate submission while a request is in flight, for both actions', () => {
+    expect(firstClientSource).toMatch(/async function submitAttach\(\) \{\s*if \(loading\) return/)
+    expect(firstClientSource).toMatch(/async function submitCreate\(\) \{\s*if \(loading\) return/)
+  })
+})
+
+describe('First QBR screen — no render-time key writes, no client-authority fields, correct navigation', () => {
+  it('the idempotency key ref is seeded from the persisted prop, not generated eagerly', () => {
+    expect(firstQbrSource).toMatch(/const keyRef = useRef<string \| null>\(persistedKey\)/)
+  })
+
+  it('crypto.randomUUID() is only reachable from inside ensureKey(), called lazily from the generate() submit handler', () => {
+    const randomUUIDOccurrences = firstQbrSource.match(/crypto\.randomUUID\(\)/g) ?? []
+    expect(randomUUIDOccurrences.length).toBe(1)
+    expect(firstQbrSource).toMatch(/function ensureKey\(\) \{\s*if \(!keyRef\.current\) keyRef\.current = crypto\.randomUUID\(\)/)
+  })
+
+  it('the generate() request body never includes a clientId — the anchored Client is resolved server-side', () => {
+    const generateFnMatch = firstQbrSource.match(/async function generate\(\) \{[\s\S]*?\n  \}/)
+    expect(generateFnMatch).not.toBeNull()
+    expect(generateFnMatch?.[0] ?? '').not.toMatch(/clientId/)
+  })
+
+  it('navigates to /dashboard on success — never to /onboarding/review-qbr (a comment explaining why is fine)', () => {
+    expect(firstQbrSource).toMatch(/router\.push\('\/dashboard'\)/)
+    expect(firstQbrSource).not.toMatch(/router\.push\(['"`]\/onboarding\/review-qbr/)
+  })
+
+  it('navigation happens only after the generate call resolves successfully, not before', () => {
+    const fetchIdx = firstQbrSource.indexOf("fetch('/api/onboarding/qbr'")
+    const throwIdx = firstQbrSource.indexOf('Generation failed. Please try again.')
+    const navIdx = firstQbrSource.indexOf("router.push('/dashboard')")
+    expect(fetchIdx).toBeGreaterThan(-1)
+    expect(throwIdx).toBeGreaterThan(-1)
+    expect(fetchIdx).toBeLessThan(navIdx)
+    expect(throwIdx).toBeLessThan(navIdx)
+  })
+
+  it('guards against duplicate submission while a request is in flight', () => {
+    expect(firstQbrSource).toMatch(/async function generate\(\) \{\s*if \(loading\) return/)
+    expect(firstQbrSource).toMatch(/disabled=\{loading\}/)
+  })
+
 })
