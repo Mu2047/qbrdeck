@@ -261,6 +261,46 @@ describe('sanitizeResolvedSlides — no-op on correct data', () => {
   })
 })
 
+// ── Regression: the exact onboarding Review-screen Production defect ────────
+// A raw slide containing literal {{healthScore}}/{{healthStatus}} — exactly
+// the QBR-generation output shape — must resolve to real values through
+// resolveSlides() + sanitizeResolvedSlides() in sequence, matching the fix
+// applied to app/onboarding/[step]/page.tsx's REVIEW_QBR branch.
+describe('resolveSlides + sanitizeResolvedSlides — onboarding Review defect regression', () => {
+  it('resolves {{healthScore}}/{{healthStatus}} to real values and leaves no literal token behind', () => {
+    const ctx = buildPlaceholderContext({
+      clientName:    'Marina School',
+      quarter:       '3',
+      year:          '2026',
+      workspaceName: 'Test Workspace',
+      mspName:       null,
+      healthScore:   100,
+      healthStatus:  'Excellent',
+      branding: {
+        ...resolveBranding({ plan: 'FREE', workspaceName: 'Test Workspace' }),
+        footerText: 'Test Workspace | Q3 2026 | Confidential',
+      },
+    })
+
+    const rawSlides = [
+      {
+        type: 'executive_summary',
+        title: 'Executive Summary',
+        content: 'Your Technology Health Score of {{healthScore}}/100 ({{healthStatus}}) reflects strong overall performance.',
+      },
+    ]
+
+    const resolved = resolveSlides(rawSlides, ctx)
+    const { slides, hadUnresolvedTokens } = sanitizeResolvedSlides(resolved)
+
+    expect(hadUnresolvedTokens).toBe(false)
+    expect((slides[0] as any).content).toContain('100')
+    expect((slides[0] as any).content).toContain('Excellent')
+    expect((slides[0] as any).content).not.toContain('{{healthScore}}')
+    expect((slides[0] as any).content).not.toContain('{{healthStatus}}')
+  })
+})
+
 // ── 7. Purity: does not mutate its input ─────────────────────────────────────
 
 describe('sanitizeResolvedSlides — purity', () => {

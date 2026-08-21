@@ -133,6 +133,65 @@ describe('onboarding [step] page — REVIEW_QBR renders the exact anchored QBR, 
     expect(pageSource).toMatch(/<ReviewQbrScreen/)
     expect(pageSource).not.toMatch(/qbr\/\$\{anchoredQbr\.id\}/)
   })
+
+  // Hotfix regression: Screen 5 originally rendered anchoredQbr.slides and
+  // anchoredQbr.summary raw, leaking literal {{healthScore}}/{{healthStatus}}
+  // tokens into Production — those fields are persisted unresolved by design
+  // (see app/api/onboarding/qbr/route.ts), and every other QBR renderer
+  // (dashboard GET /api/qbrs/[qbrId], the portal, lib/qbr-export.ts) already
+  // resolves+sanitizes before display. This block proves Screen 5 now follows
+  // the identical established boundary.
+  it('resolves the anchored QBR through the same resolve-then-sanitize boundary used elsewhere, in order', () => {
+    const reviewBlockMatch = pageSource.match(/if \(currentStep === 'REVIEW_QBR'\) \{[\s\S]*?\n  \}/)
+    expect(reviewBlockMatch).not.toBeNull()
+    const block = reviewBlockMatch?.[0] ?? ''
+
+    const anchorCheckIdx  = block.indexOf('if (!anchoredQbr) redirect')
+    const brandingIdx     = block.indexOf('resolveBranding(')
+    const placeholderIdx  = block.indexOf('buildPlaceholderContext(')
+    const resolveIdx      = block.indexOf('resolveSlides(')
+    const sanitizeIdx     = block.indexOf('sanitizeResolvedSlides(')
+    const jsxIdx          = block.indexOf('<ReviewQbrScreen')
+
+    expect(anchorCheckIdx).toBeGreaterThan(-1)
+    expect(brandingIdx).toBeGreaterThan(-1)
+    expect(placeholderIdx).toBeGreaterThan(-1)
+    expect(resolveIdx).toBeGreaterThan(-1)
+    expect(sanitizeIdx).toBeGreaterThan(-1)
+    expect(jsxIdx).toBeGreaterThan(-1)
+
+    // Exact required order: anchor verified → branding → placeholder context
+    // → resolveSlides → sanitizeResolvedSlides → render.
+    expect(anchorCheckIdx).toBeLessThan(brandingIdx)
+    expect(brandingIdx).toBeLessThan(placeholderIdx)
+    expect(placeholderIdx).toBeLessThan(resolveIdx)
+    expect(resolveIdx).toBeLessThan(sanitizeIdx)
+    expect(sanitizeIdx).toBeLessThan(jsxIdx)
+  })
+
+  it('resolveSlides is called against anchoredQbr.slides (raw), never against an already-sanitized or empty stand-in', () => {
+    expect(pageSource).toMatch(/const resolvedSlides = resolveSlides\(\s*\(anchoredQbr\.slides as Array<Record<string, unknown>>\) \?\? \[\],\s*placeholderCtx\s*\)/)
+  })
+
+  it('passes only the sanitized resolved slides to ReviewQbrScreen — never anchoredQbr.slides or anchoredQbr.summary directly', () => {
+    const reviewJsxMatch = pageSource.match(/<ReviewQbrScreen[\s\S]*?\/>/)
+    expect(reviewJsxMatch).not.toBeNull()
+    const jsx = reviewJsxMatch?.[0] ?? ''
+    expect(jsx).toMatch(/slides=\{safeResolvedSlides\}/)
+    expect(jsx).not.toMatch(/anchoredQbr\.slides/)
+    expect(jsx).not.toMatch(/anchoredQbr\.summary/)
+    expect(jsx).not.toMatch(/\bsummary=/)
+  })
+
+  it('anchoredQbr.slides/anchoredQbr.summary are never referenced anywhere in the JSX returned for this branch', () => {
+    const reviewBlockMatch = pageSource.match(/if \(currentStep === 'REVIEW_QBR'\) \{[\s\S]*?\n  \}/)
+    const block = reviewBlockMatch?.[0] ?? ''
+    const returnMatch = block.match(/return \(\s*<ReviewQbrScreen[\s\S]*?\/>\s*\)/)
+    expect(returnMatch).not.toBeNull()
+    const returnBlock = returnMatch?.[0] ?? ''
+    expect(returnBlock).not.toMatch(/anchoredQbr\.slides/)
+    expect(returnBlock).not.toMatch(/anchoredQbr\.summary/)
+  })
 })
 
 describe('onboarding [step] page — EXPORT_QBR and SHARE_QBR only presence-check the anchor, resolving nothing client-facing', () => {

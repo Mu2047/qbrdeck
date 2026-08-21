@@ -15,7 +15,13 @@ type Props = {
   year: number
   healthScore: number | null
   healthStatus: string | null
-  summary: string | null
+  // No raw `summary` prop — the QBR row's own `summary` column is an
+  // unresolved snapshot of slides[0].content captured at generation time
+  // (see app/api/onboarding/qbr/route.ts), so it always carries the same
+  // {{...}} placeholders as the unresolved slide. `slides` here is already
+  // resolved+sanitized by the caller (app/onboarding/[step]/page.tsx), so the
+  // intro paragraph is derived from slides[0] below instead of a second,
+  // independently-unresolved field.
   slides: ReviewSlide[]
 }
 
@@ -24,8 +30,9 @@ type Props = {
 // IN_PROGRESS, so a dashboard-editor escape hatch from this screen would be
 // structurally incompatible with the final activated flow. Editing is an
 // optional product capability, not something this screen offers.
-export function ReviewQbrScreen({ clientName, quarter, year, healthScore, healthStatus, summary, slides }: Props) {
+export function ReviewQbrScreen({ clientName, quarter, year, healthScore, healthStatus, slides }: Props) {
   const router = useRouter()
+  const introText = slides[0]?.content ?? null
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -74,8 +81,8 @@ export function ReviewQbrScreen({ clientName, quarter, year, healthScore, health
         </div>
       </div>
 
-      {summary && (
-        <p className="text-sm text-gray-600 leading-relaxed mb-6">{summary}</p>
+      {introText && (
+        <p className="text-sm text-gray-600 leading-relaxed mb-6">{introText}</p>
       )}
 
       <div className="space-y-4 mb-6">
