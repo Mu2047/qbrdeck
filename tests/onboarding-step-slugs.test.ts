@@ -5,6 +5,8 @@ import {
   isStepImplemented,
   isAdvanceableStep,
   requiredFromStepFor,
+  isSkippableStep,
+  skipTransitionFor,
 } from '@/lib/onboarding'
 import type { OnboardingStep } from '@prisma/client'
 
@@ -65,44 +67,68 @@ describe('stepToSlug / slugToStep — round-trip', () => {
 })
 
 describe('isStepImplemented — allowlist for this deployment', () => {
-  it.each(['WELCOME', 'WORKSPACE_NAME', 'FIRST_CLIENT', 'FIRST_QBR'] as OnboardingStep[])(
-    '%s is implemented',
-    (step) => {
-      expect(isStepImplemented(step)).toBe(true)
-    }
-  )
-
-  it.each(['REVIEW_QBR', 'EXPORT_QBR', 'SHARE_QBR', 'COMPLETE'] as OnboardingStep[])(
-    '%s is not implemented in this deployment',
-    (step) => {
-      expect(isStepImplemented(step)).toBe(false)
-    }
-  )
+  it.each(ALL_STEPS)('%s is implemented (all eight, as of PR 7)', (step) => {
+    expect(isStepImplemented(step)).toBe(true)
+  })
 })
 
-describe('isAdvanceableStep — only the two steps this slice can advance to', () => {
-  it('WORKSPACE_NAME is advanceable', () => {
-    expect(isAdvanceableStep('WORKSPACE_NAME')).toBe(true)
-  })
+describe('isAdvanceableStep — the five UI-only "Continue" transitions this slice supports', () => {
+  it.each(['WORKSPACE_NAME', 'FIRST_CLIENT', 'EXPORT_QBR', 'SHARE_QBR', 'COMPLETE'])(
+    '%s is advanceable',
+    (value) => {
+      expect(isAdvanceableStep(value)).toBe(true)
+    }
+  )
 
-  it('FIRST_CLIENT is advanceable', () => {
-    expect(isAdvanceableStep('FIRST_CLIENT')).toBe(true)
-  })
-
-  it.each(['WELCOME', 'FIRST_QBR', 'REVIEW_QBR', 'EXPORT_QBR', 'SHARE_QBR', 'COMPLETE', 'BOGUS'])(
-    '%s is not advanceable in this slice',
+  it.each(['WELCOME', 'FIRST_QBR', 'REVIEW_QBR', 'BOGUS'])(
+    '%s is not advanceable — FIRST_QBR/REVIEW_QBR are resource-dependent transitions handled by their own routes, not generic advance',
     (value) => {
       expect(isAdvanceableStep(value)).toBe(false)
     }
   )
 })
 
-describe('requiredFromStepFor — the exact fixed transition pair for this slice', () => {
+describe('requiredFromStepFor — the exact fixed transition table for this slice', () => {
   it('WORKSPACE_NAME requires the row to currently be at WELCOME', () => {
     expect(requiredFromStepFor('WORKSPACE_NAME')).toBe('WELCOME')
   })
 
   it('FIRST_CLIENT requires the row to currently be at WORKSPACE_NAME', () => {
     expect(requiredFromStepFor('FIRST_CLIENT')).toBe('WORKSPACE_NAME')
+  })
+
+  it('EXPORT_QBR requires the row to currently be at REVIEW_QBR', () => {
+    expect(requiredFromStepFor('EXPORT_QBR')).toBe('REVIEW_QBR')
+  })
+
+  it('SHARE_QBR requires the row to currently be at EXPORT_QBR', () => {
+    expect(requiredFromStepFor('SHARE_QBR')).toBe('EXPORT_QBR')
+  })
+
+  it('COMPLETE requires the row to currently be at SHARE_QBR', () => {
+    expect(requiredFromStepFor('COMPLETE')).toBe('SHARE_QBR')
+  })
+})
+
+describe('isSkippableStep — only the two optional PR 7 steps', () => {
+  it.each(['EXPORT_QBR', 'SHARE_QBR'])('%s is skippable', (value) => {
+    expect(isSkippableStep(value)).toBe(true)
+  })
+
+  it.each(['WELCOME', 'WORKSPACE_NAME', 'FIRST_CLIENT', 'FIRST_QBR', 'REVIEW_QBR', 'COMPLETE', 'BOGUS'])(
+    '%s is not skippable',
+    (value) => {
+      expect(isSkippableStep(value)).toBe(false)
+    }
+  )
+})
+
+describe('skipTransitionFor — the exact fixed skip-field + target pair for each skippable step', () => {
+  it('EXPORT_QBR skip sets exportSkippedAt and advances to SHARE_QBR', () => {
+    expect(skipTransitionFor('EXPORT_QBR')).toEqual({ skipField: 'exportSkippedAt', toStep: 'SHARE_QBR' })
+  })
+
+  it('SHARE_QBR skip sets shareSkippedAt and advances to COMPLETE', () => {
+    expect(skipTransitionFor('SHARE_QBR')).toEqual({ skipField: 'shareSkippedAt', toStep: 'COMPLETE' })
   })
 })

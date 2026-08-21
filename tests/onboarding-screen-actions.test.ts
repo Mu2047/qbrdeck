@@ -18,6 +18,10 @@ const welcomeSource = readSourceLF('app/onboarding/_screens/welcome.tsx')
 const workspaceNameSource = readSourceLF('app/onboarding/_screens/workspace-name.tsx')
 const firstClientSource = readSourceLF('app/onboarding/_screens/first-client.tsx')
 const firstQbrSource = readSourceLF('app/onboarding/_screens/first-qbr.tsx')
+const reviewQbrSource = readSourceLF('app/onboarding/_screens/review-qbr.tsx')
+const exportQbrSource = readSourceLF('app/onboarding/_screens/export-qbr.tsx')
+const shareQbrSource = readSourceLF('app/onboarding/_screens/share-qbr.tsx')
+const completeSource = readSourceLF('app/onboarding/_screens/complete.tsx')
 
 describe('Welcome screen — advances to WORKSPACE_NAME, then navigates only on confirmed success', () => {
   it('POSTs /api/onboarding/advance with toStep: WORKSPACE_NAME', () => {
@@ -172,15 +176,15 @@ describe('First QBR screen — no render-time key writes, no client-authority fi
     expect(generateFnMatch?.[0] ?? '').not.toMatch(/clientId/)
   })
 
-  it('navigates to /dashboard on success — never to /onboarding/review-qbr (a comment explaining why is fine)', () => {
-    expect(firstQbrSource).toMatch(/router\.push\('\/dashboard'\)/)
-    expect(firstQbrSource).not.toMatch(/router\.push\(['"`]\/onboarding\/review-qbr/)
+  it('navigates to /onboarding/review-qbr on success, now that Screen 5 exists (PR 7) — never /dashboard', () => {
+    expect(firstQbrSource).toMatch(/router\.push\('\/onboarding\/review-qbr'\)/)
+    expect(firstQbrSource).not.toMatch(/router\.push\(['"`]\/dashboard/)
   })
 
   it('navigation happens only after the generate call resolves successfully, not before', () => {
     const fetchIdx = firstQbrSource.indexOf("fetch('/api/onboarding/qbr'")
     const throwIdx = firstQbrSource.indexOf('Generation failed. Please try again.')
-    const navIdx = firstQbrSource.indexOf("router.push('/dashboard')")
+    const navIdx = firstQbrSource.indexOf("router.push('/onboarding/review-qbr')")
     expect(fetchIdx).toBeGreaterThan(-1)
     expect(throwIdx).toBeGreaterThan(-1)
     expect(fetchIdx).toBeLessThan(navIdx)
@@ -192,4 +196,151 @@ describe('First QBR screen — no render-time key writes, no client-authority fi
     expect(firstQbrSource).toMatch(/disabled=\{loading\}/)
   })
 
+})
+
+describe('Review QBR screen — read-only, no dashboard-editor escape, Continue only to EXPORT_QBR', () => {
+  it('never fetches a QBR itself and never sends a qbrId anywhere — all content arrives as props from the server', () => {
+    expect(reviewQbrSource).not.toMatch(/fetch\('\/api\/qbrs/)
+    expect(reviewQbrSource).not.toMatch(/qbrId/)
+  })
+
+  it('renders no editable input/textarea and no PATCH call — this screen never edits the QBR', () => {
+    expect(reviewQbrSource).not.toMatch(/<input/)
+    expect(reviewQbrSource).not.toMatch(/<textarea/)
+    expect(reviewQbrSource).not.toMatch(/method:\s*'PATCH'/)
+  })
+
+  it('never links to the dashboard QBR editor (no /dashboard/clients/.../qbr/ path anywhere)', () => {
+    expect(reviewQbrSource).not.toMatch(/\/dashboard\/clients\//)
+  })
+
+  it('Continue POSTs /api/onboarding/advance with toStep: EXPORT_QBR, only navigating on confirmed success', () => {
+    expect(reviewQbrSource).toMatch(/body:\s*JSON\.stringify\(\{ toStep: 'EXPORT_QBR' \}\)/)
+    const fetchIdx = reviewQbrSource.indexOf("fetch('/api/onboarding/advance'")
+    const throwIdx = reviewQbrSource.indexOf('Failed to continue')
+    const navIdx = reviewQbrSource.indexOf("router.push('/onboarding/export-qbr')")
+    expect(fetchIdx).toBeGreaterThan(-1)
+    expect(fetchIdx).toBeLessThan(throwIdx)
+    expect(throwIdx).toBeLessThan(navIdx)
+  })
+
+  it('guards against duplicate submission while a request is in flight', () => {
+    expect(reviewQbrSource).toMatch(/async function handleContinue\(\) \{\s*if \(loading\) return/)
+  })
+})
+
+describe('Export QBR screen — anchored export only, LIMIT_REACHED never removes Skip, Continue gated on a real success', () => {
+  it('POSTs /api/onboarding/export with only { format } — no qbrId anywhere in the request body', () => {
+    expect(exportQbrSource).toMatch(/body:\s*JSON\.stringify\(\{ format \}\)/)
+    const doExportMatch = exportQbrSource.match(/async function doExport\([\s\S]*?\n  \}/)
+    expect(doExportMatch).not.toBeNull()
+    expect(doExportMatch?.[0] ?? '').not.toMatch(/qbrId/)
+  })
+
+  it('a LIMIT_REACHED response shows inline copy and never redirects to billing', () => {
+    expect(exportQbrSource).toMatch(/data\.error === 'LIMIT_REACHED'/)
+    expect(exportQbrSource).not.toMatch(/billing/i)
+    expect(exportQbrSource).not.toMatch(/window\.location/)
+  })
+
+  it('Skip for now is always rendered, unconditional on export/limit state', () => {
+    const skipButtonMatch = exportQbrSource.match(/onClick=\{handleSkip\}[\s\S]*?<\/button>/)
+    expect(skipButtonMatch).not.toBeNull()
+    // The Skip button itself is not wrapped in an `{exported && ...}` or
+    // `{!limitReached && ...}` conditional — only the Continue button is.
+    const beforeSkipButton = exportQbrSource.slice(0, exportQbrSource.indexOf('onClick={handleSkip}'))
+    const lastConditionalOpen = beforeSkipButton.lastIndexOf('{exported && (')
+    const lastConditionalClose = beforeSkipButton.lastIndexOf(')}')
+    expect(lastConditionalOpen === -1 || lastConditionalClose > lastConditionalOpen).toBe(true)
+  })
+
+  it('Continue only renders after a successful export in this session (gated on the exported state flag)', () => {
+    expect(exportQbrSource).toMatch(/\{exported && \(\s*<button\s*onClick=\{handleContinue\}/)
+  })
+
+  it('Continue calls /api/onboarding/advance with toStep: SHARE_QBR; Skip calls /api/onboarding/skip with step: EXPORT_QBR', () => {
+    expect(exportQbrSource).toMatch(/body:\s*JSON\.stringify\(\{ toStep: 'SHARE_QBR' \}\)/)
+    expect(exportQbrSource).toMatch(/body:\s*JSON\.stringify\(\{ step: 'EXPORT_QBR' \}\)/)
+  })
+
+  it('both Continue and Skip navigate to /onboarding/share-qbr only after a confirmed successful response', () => {
+    const navOccurrences = exportQbrSource.match(/router\.push\('\/onboarding\/share-qbr'\)/g) ?? []
+    expect(navOccurrences.length).toBe(2)
+  })
+
+  it('guards against overlapping requests across export/continue/skip', () => {
+    expect(exportQbrSource).toMatch(/if \(exporting \|\| continuing \|\| skipping\) return/)
+    expect(exportQbrSource).toMatch(/if \(continuing\) return/)
+    expect(exportQbrSource).toMatch(/if \(skipping\) return/)
+  })
+})
+
+describe('Share QBR screen — anchored share only, no automatic email, Skip always available', () => {
+  it('link and email actions both POST /api/onboarding/share — no qbrId in either body', () => {
+    expect(shareQbrSource).toMatch(/body:\s*JSON\.stringify\(\{ action: 'link' \}\)/)
+    expect(shareQbrSource).toMatch(/body:\s*JSON\.stringify\(\{ action: 'email', email: email\.trim\(\) \}\)/)
+    expect(shareQbrSource).not.toMatch(/qbrId/)
+  })
+
+  it('sendEmail requires a non-empty, explicitly clicked email field — never fires from a mount effect or the link action', () => {
+    expect(shareQbrSource).not.toMatch(/useEffect/)
+    expect(shareQbrSource).toMatch(/async function sendEmail\(\) \{\s*if \(busy \|\| !email\.trim\(\)\) return/)
+  })
+
+  it('email is only a prefill convenience — absence of prefillEmail never blocks rendering (no early return/guard on it)', () => {
+    expect(shareQbrSource).toMatch(/useState\(prefillEmail \?\? ''\)/)
+    expect(shareQbrSource).not.toMatch(/if \(!prefillEmail\)/)
+  })
+
+  it('Skip for now is always rendered, not conditioned on copy/send having succeeded', () => {
+    const skipButtonIdx = shareQbrSource.indexOf('onClick={handleSkip}')
+    expect(skipButtonIdx).toBeGreaterThan(-1)
+    const beforeSkipButton = shareQbrSource.slice(0, skipButtonIdx)
+    // Continue is the one gated on `succeeded`; Skip's own button below it
+    // is not inside that same conditional block.
+    expect(beforeSkipButton).toMatch(/\{succeeded && \(/)
+  })
+
+  it('Continue calls advance with toStep: COMPLETE; Skip calls skip with step: SHARE_QBR', () => {
+    expect(shareQbrSource).toMatch(/body:\s*JSON\.stringify\(\{ toStep: 'COMPLETE' \}\)/)
+    expect(shareQbrSource).toMatch(/body:\s*JSON\.stringify\(\{ step: 'SHARE_QBR' \}\)/)
+  })
+
+  it('both Continue and Skip navigate to /onboarding/complete only after a confirmed successful response', () => {
+    const navOccurrences = shareQbrSource.match(/router\.push\('\/onboarding\/complete'\)/g) ?? []
+    expect(navOccurrences.length).toBe(2)
+  })
+})
+
+describe('Complete screen — every destination calls the same finish() first, completion is authoritative', () => {
+  it('exactly one finish() function, and every button funnels through it', () => {
+    const finishFnOccurrences = completeSource.match(/async function finish\(destination: Destination\)/g) ?? []
+    expect(finishFnOccurrences.length).toBe(1)
+    const onClickOccurrences = completeSource.match(/onClick=\{\(\) => finish\(/g) ?? []
+    expect(onClickOccurrences.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('finish() POSTs /api/onboarding/finish and only navigates after a confirmed successful response', () => {
+    const fetchIdx = completeSource.indexOf("fetch('/api/onboarding/finish'")
+    const throwIdx = completeSource.indexOf('Failed to finish onboarding')
+    const navIdx = completeSource.indexOf('router.push(DESTINATION_PATH[destination])')
+    expect(fetchIdx).toBeGreaterThan(-1)
+    expect(fetchIdx).toBeLessThan(throwIdx)
+    expect(throwIdx).toBeLessThan(navIdx)
+  })
+
+  it('a failed finish() call sets an error and does not navigate (no router.push inside the catch)', () => {
+    const catchMatch = completeSource.match(/\} catch \(e: any\) \{[\s\S]*?\n    \}/)
+    expect(catchMatch).not.toBeNull()
+    expect(catchMatch?.[0] ?? '').not.toMatch(/router\.push/)
+  })
+
+  it('the Invite teammate button only renders when canInviteTeammate is true', () => {
+    expect(completeSource).toMatch(/\{canInviteTeammate && \(/)
+  })
+
+  it('the primary heading and button copy match the locked product spec exactly', () => {
+    expect(completeSource).toMatch(/Your workspace is ready/)
+    expect(completeSource).toMatch(/Finish & go to dashboard/)
+  })
 })

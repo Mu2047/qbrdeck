@@ -102,3 +102,73 @@ describe('onboarding [step] page — renders only for the exact matching, implem
     expect(pageSource).not.toMatch(/prisma\.\w+\.(create|update|upsert|delete|updateMany|deleteMany)\(/)
   })
 })
+
+describe('onboarding [step] page — REVIEW_QBR renders the exact anchored QBR, never a browser-supplied id', () => {
+  it('resolves onboardingClientId/onboardingQbrId from a workspace-scoped lookup, never from params or request data', () => {
+    const reviewBlockMatch = pageSource.match(/if \(currentStep === 'REVIEW_QBR'\) \{[\s\S]*?\n  \}/)
+    expect(reviewBlockMatch).not.toBeNull()
+    const block = reviewBlockMatch?.[0] ?? ''
+    expect(block).toMatch(/prisma\.workspaceOnboarding\.findUnique\(\{\s*where:\s*\{ workspaceId: ctx\.workspaceId \},\s*select:\s*\{ onboardingClientId: true, onboardingQbrId: true \},/)
+  })
+
+  it('fails open to /dashboard when the anchor is missing/malformed, before ever querying the QBR', () => {
+    const reviewBlockMatch = pageSource.match(/if \(currentStep === 'REVIEW_QBR'\) \{[\s\S]*?\n  \}/)
+    const block = reviewBlockMatch?.[0] ?? ''
+    const guardIdx = block.indexOf("redirect('/dashboard')")
+    const qbrLookupIdx = block.indexOf('prisma.qBR.findFirst(')
+    expect(guardIdx).toBeGreaterThan(-1)
+    expect(qbrLookupIdx).toBeGreaterThan(-1)
+    expect(guardIdx).toBeLessThan(qbrLookupIdx)
+  })
+
+  it('the anchored QBR lookup is scoped by id, workspaceId, and clientId together, with deletedAt: null', () => {
+    expect(pageSource).toMatch(/const anchoredQbr = await prisma\.qBR\.findFirst\(\{\s*where:\s*\{\s*id:\s*onboardingRow\.onboardingQbrId,\s*workspaceId:\s*ctx\.workspaceId,\s*clientId:\s*onboardingRow\.onboardingClientId,\s*deletedAt:\s*null,/)
+  })
+
+  it('a missing anchored QBR (id/workspace/client mismatch) fails open to /dashboard, never renders a broken screen', () => {
+    expect(pageSource).toMatch(/if \(!anchoredQbr\) redirect\('\/dashboard'\)/)
+  })
+
+  it('renders ReviewQbrScreen with only display data — no edit/dashboard-editor link is ever passed or imported here', () => {
+    expect(pageSource).toMatch(/<ReviewQbrScreen/)
+    expect(pageSource).not.toMatch(/qbr\/\$\{anchoredQbr\.id\}/)
+  })
+})
+
+describe('onboarding [step] page — EXPORT_QBR and SHARE_QBR only presence-check the anchor, resolving nothing client-facing', () => {
+  it('EXPORT_QBR fails open to /dashboard on a missing/malformed anchor before rendering ExportQbrScreen', () => {
+    const exportBlockMatch = pageSource.match(/if \(currentStep === 'EXPORT_QBR'\) \{[\s\S]*?\n  \}/)
+    expect(exportBlockMatch).not.toBeNull()
+    const block = exportBlockMatch?.[0] ?? ''
+    expect(block).toMatch(/redirect\('\/dashboard'\)/)
+    expect(block).toMatch(/<ExportQbrScreen \/>/)
+  })
+
+  it('SHARE_QBR resolves only the anchored Client contactEmail as a convenience prefill, never a qbrId', () => {
+    const shareBlockMatch = pageSource.match(/if \(currentStep === 'SHARE_QBR'\) \{[\s\S]*?\n  \}/)
+    expect(shareBlockMatch).not.toBeNull()
+    const block = shareBlockMatch?.[0] ?? ''
+    expect(block).toMatch(/redirect\('\/dashboard'\)/)
+    expect(block).toMatch(/prisma\.client\.findFirst\(\{\s*where:\s*\{ id: onboardingRow\.onboardingClientId, workspaceId: ctx\.workspaceId, deletedAt: null \},\s*select:\s*\{ contactEmail: true \},/)
+    expect(block).toMatch(/<ShareQbrScreen prefillEmail=\{anchoredClient\?\.contactEmail \|\| null\} \/>/)
+  })
+})
+
+describe('onboarding [step] page — COMPLETE derives invite capacity from actual seat occupancy, never plan type alone', () => {
+  it('uses canInviteMoreMembers(plan, memberCount), not canInviteTeam(plan)', () => {
+    const completeBlockMatch = pageSource.match(/if \(currentStep === 'COMPLETE'\) \{[\s\S]*?\n  \}/)
+    expect(completeBlockMatch).not.toBeNull()
+    const block = completeBlockMatch?.[0] ?? ''
+    expect(block).toMatch(/canInviteMoreMembers\(plan, memberCount\)/)
+    expect(block).not.toMatch(/canInviteTeam\(/)
+  })
+
+  it('memberCount comes from a live prisma.workspaceMember.count, not a cached/derived value', () => {
+    expect(pageSource).toMatch(/const memberCount = await prisma\.workspaceMember\.count\(\{\s*where:\s*\{ workspaceId: ctx\.workspaceId \},/)
+  })
+
+  it('never writes status: COMPLETED or a completedAt timestamp on this page — only Finish (a separate API route) may do that', () => {
+    expect(pageSource).not.toMatch(/status:\s*'COMPLETED'/)
+    expect(pageSource).not.toMatch(/completedAt:\s*new Date/)
+  })
+})

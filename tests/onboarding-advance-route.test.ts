@@ -15,13 +15,25 @@ function readSourceLF(relativePath: string): string {
 
 const routeSource = readSourceLF('app/api/onboarding/advance/route.ts')
 
-describe('advance route — the exact fixed transition pair (real import, not a mirror)', () => {
+describe('advance route — the exact fixed transition table (real import, not a mirror)', () => {
   it('WORKSPACE_NAME requires persisted currentStep WELCOME', () => {
     expect(requiredFromStepFor('WORKSPACE_NAME')).toBe('WELCOME')
   })
 
   it('FIRST_CLIENT requires persisted currentStep WORKSPACE_NAME', () => {
     expect(requiredFromStepFor('FIRST_CLIENT')).toBe('WORKSPACE_NAME')
+  })
+
+  it('EXPORT_QBR requires persisted currentStep REVIEW_QBR', () => {
+    expect(requiredFromStepFor('EXPORT_QBR')).toBe('REVIEW_QBR')
+  })
+
+  it('SHARE_QBR requires persisted currentStep EXPORT_QBR', () => {
+    expect(requiredFromStepFor('SHARE_QBR')).toBe('EXPORT_QBR')
+  })
+
+  it('COMPLETE requires persisted currentStep SHARE_QBR', () => {
+    expect(requiredFromStepFor('COMPLETE')).toBe('SHARE_QBR')
   })
 })
 
@@ -42,8 +54,8 @@ describe('advance route — authentication and membership resolution', () => {
 })
 
 describe('advance route — request body accepts only toStep', () => {
-  it('the zod schema defines exactly one field: toStep', () => {
-    expect(routeSource).toMatch(/const advanceSchema = z\.object\(\{\s*toStep: z\.enum\(\['WORKSPACE_NAME', 'FIRST_CLIENT'\]\),\s*\}\)\.strict\(\)/)
+  it('the zod schema defines exactly one field: toStep, covering all five UI-only transitions', () => {
+    expect(routeSource).toMatch(/const advanceSchema = z\.object\(\{\s*toStep: z\.enum\(\['WORKSPACE_NAME', 'FIRST_CLIENT', 'EXPORT_QBR', 'SHARE_QBR', 'COMPLETE'\]\),\s*\}\)\.strict\(\)/)
   })
 
   it('never reads workspaceId, userId, onboardingOwnerUserId, fromStep, or role from the parsed request body', () => {
