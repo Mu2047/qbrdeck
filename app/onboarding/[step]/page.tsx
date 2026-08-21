@@ -2,11 +2,16 @@ import { auth } from '@clerk/nextjs/server'
 import { redirect, notFound } from 'next/navigation'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceContext } from '@/lib/workspace'
+import { canInviteMoreMembers } from '@/lib/permissions'
 import { shouldInterceptOnboarding, isStepImplemented, slugToStep, stepToSlug } from '@/lib/onboarding'
 import { WelcomeScreen } from '../_screens/welcome'
 import { WorkspaceNameScreen } from '../_screens/workspace-name'
 import { FirstClientScreen } from '../_screens/first-client'
 import { FirstQbrScreen } from '../_screens/first-qbr'
+import { ReviewQbrScreen } from '../_screens/review-qbr'
+import { ExportQbrScreen } from '../_screens/export-qbr'
+import { ShareQbrScreen } from '../_screens/share-qbr'
+import { CompleteScreen } from '../_screens/complete'
 
 // Authorization precedence is load-bearing — see P2 onboarding preflight.
 // Order must not change without re-deriving it:
@@ -81,7 +86,98 @@ export default async function OnboardingStepPage({ params }: { params: { step: s
     return <FirstQbrScreen persistedKey={onboardingRow?.qbrStepIdempotencyKey ?? null} />
   }
 
+  // REVIEW_QBR — read-only. The QBR displayed is exactly
+  // WorkspaceOnboarding.onboardingQbrId, resolved server-side; the browser
+  // never supplies a qbrId. Malformed/missing anchor state fails open to
+  // /dashboard rather than rendering a broken review — see P2 onboarding PR 7
+  // preflight, Correction 1.
+  if (currentStep === 'REVIEW_QBR') {
+    const onboardingRow = await prisma.workspaceOnboarding.findUnique({
+      where: { workspaceId: ctx.workspaceId },
+      select: { onboardingClientId: true, onboardingQbrId: true },
+    })
+
+    if (!onboardingRow?.onboardingClientId || !onboardingRow?.onboardingQbrId) {
+      redirect('/dashboard')
+    }
+
+    const anchoredQbr = await prisma.qBR.findFirst({
+      where: {
+        id:          onboardingRow.onboardingQbrId,
+        workspaceId: ctx.workspaceId,
+        clientId:    onboardingRow.onboardingClientId,
+        deletedAt:   null,
+      },
+      include: { client: true },
+    })
+
+    if (!anchoredQbr) redirect('/dashboard')
+
+    return (
+      <ReviewQbrScreen
+        clientName={anchoredQbr.client.name}
+        quarter={anchoredQbr.quarter}
+        year={anchoredQbr.year}
+        healthScore={anchoredQbr.healthScore}
+        healthStatus={anchoredQbr.healthStatus}
+        summary={anchoredQbr.summary}
+        slides={(anchoredQbr.slides as any[]) ?? []}
+      />
+    )
+  }
+
+  // EXPORT_QBR / SHARE_QBR — no anchored content needs to reach the client
+  // for these two screens (export/share actions resolve the anchored QBR
+  // entirely server-side inside their own API routes); only a light presence
+  // check + fail-open guard is needed here so a malformed/missing anchor
+  // never renders a broken screen.
+  if (currentStep === 'EXPORT_QBR') {
+    const onboardingRow = await prisma.workspaceOnboarding.findUnique({
+      where: { workspaceId: ctx.workspaceId },
+      select: { onboardingClientId: true, onboardingQbrId: true },
+    })
+
+    if (!onboardingRow?.onboardingClientId || !onboardingRow?.onboardingQbrId) {
+      redirect('/dashboard')
+    }
+
+    return <ExportQbrScreen />
+  }
+
+  if (currentStep === 'SHARE_QBR') {
+    const onboardingRow = await prisma.workspaceOnboarding.findUnique({
+      where: { workspaceId: ctx.workspaceId },
+      select: { onboardingClientId: true, onboardingQbrId: true },
+    })
+
+    if (!onboardingRow?.onboardingClientId || !onboardingRow?.onboardingQbrId) {
+      redirect('/dashboard')
+    }
+
+    const anchoredClient = await prisma.client.findFirst({
+      where: { id: onboardingRow.onboardingClientId, workspaceId: ctx.workspaceId, deletedAt: null },
+      select: { contactEmail: true },
+    })
+
+    return <ShareQbrScreen prefillEmail={anchoredClient?.contactEmail || null} />
+  }
+
+  // COMPLETE — durably distinct from actual completion: status is still
+  // IN_PROGRESS and completedAt is still null here. Only Screen 8's Finish
+  // action (POST /api/onboarding/finish) may set status = COMPLETED. Invite
+  // capacity is derived from the exact same source of truth the real invite
+  // endpoint uses (member count vs. plan seat limit), never from plan type
+  // alone — see P2 onboarding PR 7 preflight, Correction 3.
+  if (currentStep === 'COMPLETE') {
+    const plan = ctx.subscription?.plan ?? 'FREE'
+    const memberCount = await prisma.workspaceMember.count({
+      where: { workspaceId: ctx.workspaceId },
+    })
+
+    return <CompleteScreen canInviteTeammate={canInviteMoreMembers(plan, memberCount)} />
+  }
+
   // Unreachable: isStepImplemented above already narrowed currentStep to
-  // one of the four steps handled above for this deployment.
+  // one of the eight steps handled above for this deployment.
   notFound()
 }

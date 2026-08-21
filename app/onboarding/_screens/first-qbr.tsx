@@ -62,10 +62,10 @@ export function FirstQbrScreen({ persistedKey }: Props) {
         }
         throw new Error(typeof data.error === 'string' ? data.error : 'Generation failed. Please try again.')
       }
-      // Screen 5 (Review QBR) does not exist yet — the persisted step is now
-      // REVIEW_QBR, and /dashboard is the intentional temporary fail-open
-      // target, not /onboarding/review-qbr.
-      router.push('/dashboard')
+      // The persisted step is now REVIEW_QBR, and Screen 5 exists as of PR 7
+      // — navigate there directly instead of the old temporary /dashboard
+      // fail-open target.
+      router.push('/onboarding/review-qbr')
     } catch (e: any) {
       setError(e.message || 'Generation failed. Please try again.')
       setLoading(false)

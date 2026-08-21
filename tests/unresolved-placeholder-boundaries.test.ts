@@ -14,15 +14,18 @@ import path from 'path'
 
 const ROOT = path.resolve(__dirname, '..')
 
+// export-pdf/export-pptx are no longer their own boundary: PR 7 extracted
+// their shared business logic (quota, generation, ExportEvent, and this
+// sanitize/log call) into lib/qbr-export.ts, so both routes now reach a
+// single parameterized boundary instead of duplicating it — see the
+// dedicated describe block below for that boundary's coverage.
 const BOUNDARIES: Array<{ file: string; tag: string }> = [
   { file: 'app/api/qbrs/[qbrId]/route.ts', tag: 'saved-qbr-get' },
   { file: 'app/api/generate-qbr/route.ts', tag: 'generate-qbr' },
   { file: 'app/portal/[token]/page.tsx',   tag: 'portal' },
-  { file: 'app/api/export-pdf/route.ts',   tag: 'export-pdf' },
-  { file: 'app/api/export-pptx/route.ts',  tag: 'export-pptx' },
 ]
 
-const ALL_TAGS = BOUNDARIES.map(b => b.tag)
+const ALL_TAGS = [...BOUNDARIES.map(b => b.tag), 'export-pdf', 'export-pptx']
 
 // Identifiers that must never appear on a line logging an unresolved
 // placeholder detection — these would indicate private QBR content leaking
@@ -96,7 +99,7 @@ describe.each(BOUNDARIES)('unresolved-placeholder logging — source contract: $
   })
 })
 
-describe('sanitizeResolvedSlides usage — all five boundaries call it after resolveSlides()', () => {
+describe('sanitizeResolvedSlides usage — the three standalone boundaries call it after resolveSlides()', () => {
   for (const { file } of BOUNDARIES) {
     it(`${file} imports sanitizeResolvedSlides from lib/placeholders`, () => {
       const source = fs.readFileSync(path.join(ROOT, file), 'utf8')
@@ -104,4 +107,47 @@ describe('sanitizeResolvedSlides usage — all five boundaries call it after res
       expect(source).toContain('sanitizeResolvedSlides(')
     })
   }
+})
+
+describe('unresolved-placeholder logging — export-pdf/export-pptx share one gated boundary in lib/qbr-export.ts', () => {
+  const helperSource = fs.readFileSync(path.join(ROOT, 'lib/qbr-export.ts'), 'utf8')
+
+  it('contains one console.error call using a template-literal tag parameterized by format, covering both pdf and pptx', () => {
+    expect(helperSource).toContain('console.error(`[unresolved-placeholder][export-${format}]`, qbr.id)')
+  })
+
+  it('is gated behind hadUnresolvedTokens, not unconditional', () => {
+    const idx = helperSource.indexOf('console.error(`[unresolved-placeholder][export-${format}]`, qbr.id)')
+    expect(idx).toBeGreaterThan(-1)
+    const preceding = helperSource.slice(Math.max(0, idx - 200), idx)
+    expect(preceding).toMatch(/if\s*\([^)]*hadUnresolvedTokens[^)]*\)/)
+  })
+
+  it('logs no client names, slide content, metrics, priorities, or recommendations on the logging line', () => {
+    const loggingLines = helperSource.split('\n').filter(l => l.includes('[unresolved-placeholder]'))
+    expect(loggingLines.length).toBeGreaterThan(0)
+    for (const line of loggingLines) {
+      expect(line).toContain('qbr.id')
+      const lower = line.toLowerCase()
+      for (const term of FORBIDDEN_TERMS) {
+        if (term === 'placeholder]') continue
+        expect(lower).not.toContain(term)
+      }
+    }
+  })
+
+  it('imports sanitizeResolvedSlides from lib/placeholders and calls it after resolveSlides()', () => {
+    expect(helperSource).toMatch(/import\s*\{[^}]*sanitizeResolvedSlides[^}]*\}\s*from\s*['"]@\/lib\/placeholders['"]/)
+    const resolveIdx = helperSource.indexOf('resolveSlides(')
+    const sanitizeIdx = helperSource.indexOf('sanitizeResolvedSlides(')
+    expect(resolveIdx).toBeGreaterThan(-1)
+    expect(sanitizeIdx).toBeGreaterThan(resolveIdx)
+  })
+
+  it('neither export-pdf nor export-pptx routes duplicate this logging call themselves (single source of truth, never double-logged)', () => {
+    const pdfSource = fs.readFileSync(path.join(ROOT, 'app/api/export-pdf/route.ts'), 'utf8')
+    const pptxSource = fs.readFileSync(path.join(ROOT, 'app/api/export-pptx/route.ts'), 'utf8')
+    expect(pdfSource).not.toContain('[unresolved-placeholder]')
+    expect(pptxSource).not.toContain('[unresolved-placeholder]')
+  })
 })

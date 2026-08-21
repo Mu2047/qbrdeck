@@ -73,6 +73,10 @@ const IMPLEMENTED_STEPS: ReadonlySet<OnboardingStep> = new Set<OnboardingStep>([
   'WORKSPACE_NAME',
   'FIRST_CLIENT',
   'FIRST_QBR',
+  'REVIEW_QBR',
+  'EXPORT_QBR',
+  'SHARE_QBR',
+  'COMPLETE',
 ])
 
 export function isStepImplemented(step: OnboardingStep): boolean {
@@ -82,15 +86,27 @@ export function isStepImplemented(step: OnboardingStep): boolean {
 // Fixed, exhaustive transition table for the advance API in THIS deployment
 // slice. Intentionally not a generic state machine over all OnboardingStep
 // values — adding a transition requires an explicit new entry, never a loop.
+// Only UI-only transitions belong here: ones that write nothing but
+// currentStep. FIRST_CLIENT->FIRST_QBR (Client attach/create) and
+// FIRST_QBR->REVIEW_QBR (QBR persistence) are resource-creating and stay in
+// their own dedicated routes; EXPORT_QBR->SHARE_QBR and SHARE_QBR->COMPLETE
+// have a *different* write (a skip marker) on their explicit-Skip path, so
+// that path lives in /api/onboarding/skip instead — this table only ever
+// covers the plain "Continue" path for each of those two steps.
 const ADVANCE_TRANSITIONS = {
   WORKSPACE_NAME: 'WELCOME',
   FIRST_CLIENT:   'WORKSPACE_NAME',
+  EXPORT_QBR:     'REVIEW_QBR',
+  SHARE_QBR:      'EXPORT_QBR',
+  COMPLETE:       'SHARE_QBR',
 } as const satisfies Record<string, OnboardingStep>
 
 export type AdvanceableStep = keyof typeof ADVANCE_TRANSITIONS
 
+const ADVANCEABLE_STEPS: ReadonlySet<string> = new Set(Object.keys(ADVANCE_TRANSITIONS))
+
 export function isAdvanceableStep(toStep: string): toStep is AdvanceableStep {
-  return toStep === 'WORKSPACE_NAME' || toStep === 'FIRST_CLIENT'
+  return ADVANCEABLE_STEPS.has(toStep)
 }
 
 // The exact persisted currentStep an onboarding row must already be at
@@ -98,4 +114,26 @@ export function isAdvanceableStep(toStep: string): toStep is AdvanceableStep {
 // narrowed toStep, so the lookup can never miss.
 export function requiredFromStepFor(toStep: AdvanceableStep): OnboardingStep {
   return ADVANCE_TRANSITIONS[toStep]
+}
+
+// Fixed, exhaustive table for the explicit-Skip API. Each entry pairs the
+// step being skipped with the WorkspaceOnboarding column that records the
+// explicit skip and the step it advances to — a different write shape than
+// ADVANCE_TRANSITIONS above, which is exactly why skip lives in its own
+// endpoint rather than being folded into the generic advance table.
+const SKIP_TRANSITIONS = {
+  EXPORT_QBR: { skipField: 'exportSkippedAt', toStep: 'SHARE_QBR' },
+  SHARE_QBR:  { skipField: 'shareSkippedAt',  toStep: 'COMPLETE'  },
+} as const satisfies Record<string, { skipField: string; toStep: OnboardingStep }>
+
+export type SkippableStep = keyof typeof SKIP_TRANSITIONS
+
+const SKIPPABLE_STEPS: ReadonlySet<string> = new Set(Object.keys(SKIP_TRANSITIONS))
+
+export function isSkippableStep(step: string): step is SkippableStep {
+  return SKIPPABLE_STEPS.has(step)
+}
+
+export function skipTransitionFor(step: SkippableStep): { skipField: 'exportSkippedAt' | 'shareSkippedAt'; toStep: OnboardingStep } {
+  return SKIP_TRANSITIONS[step]
 }

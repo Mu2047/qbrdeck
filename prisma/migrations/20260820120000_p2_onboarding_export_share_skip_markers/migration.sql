@@ -1,0 +1,31 @@
+-- ============================================================================
+-- P2 Onboarding PR 7 — Export/Share Explicit-Skip Markers (SCHEMA ONLY)
+--
+-- Purpose: add durable, explicit-skip markers for the two optional PR 7
+-- steps (EXPORT_QBR, SHARE_QBR). currentStep progression alone already
+-- proves REVIEW_QBR was viewed (its only forward path is Continue), so no
+-- reviewViewedAt column is added. Export and Share are skippable, though,
+-- so only an explicit-skip write can durably distinguish "user performed
+-- the action then continued" from "user explicitly clicked Skip" — neither
+-- case can be reliably derived after the fact from ExportEvent/ShareLink
+-- history, since either may predate or postdate this onboarding journey.
+--
+-- This migration performs NO data mutation of any kind. Both columns carry
+-- no PostgreSQL-level DEFAULT and no UPDATE statement follows them, so every
+-- existing WorkspaceOnboarding row (including the production canary
+-- currently IN_PROGRESS at REVIEW_QBR) simply gains two new columns that are
+-- NULL — exactly the same "not skipped" value a fresh row will also start
+-- with, so no existing row's semantics silently change.
+--
+-- Nullable, no index: not queried in isolation (always read alongside the
+-- authenticated WorkspaceOnboarding row already indexed on status/workspaceId
+-- via its existing unique/primary keys), so no new index is warranted.
+--
+-- Population (POST /api/onboarding/skip) and consumption (Screen 8 render
+-- decisions, if ever needed) are runtime concerns delivered in the same PR 7
+-- application code — this migration only adds the columns.
+-- ============================================================================
+
+-- AlterTable
+ALTER TABLE "WorkspaceOnboarding" ADD COLUMN "exportSkippedAt" TIMESTAMP(3);
+ALTER TABLE "WorkspaceOnboarding" ADD COLUMN "shareSkippedAt" TIMESTAMP(3);

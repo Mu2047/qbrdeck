@@ -446,6 +446,17 @@ model WorkspaceOnboarding {
   clientStepIdempotencyKey String?
   qbrStepIdempotencyKey    String?
 
+  // Durable explicit-skip markers for the two optional PR 7 steps. Nullable,
+  // default-less, never backfilled — currentStep progression alone already
+  // proves REVIEW_QBR was passed through (no reviewViewedAt needed), but
+  // Export/Share are skippable, so only an explicit Skip write can durably
+  // distinguish "user performed the action then continued" from "user
+  // explicitly skipped" (see P2 onboarding PR 7 preflight). Set only by
+  // POST /api/onboarding/skip; never inferred from ExportEvent/ShareLink
+  // history, since either may predate or postdate this onboarding journey.
+  exportSkippedAt DateTime?
+  shareSkippedAt  DateTime?
+
   exemptReason String?
 
   startedAt   DateTime?
