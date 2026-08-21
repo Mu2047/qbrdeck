@@ -25,7 +25,7 @@ const BOUNDARIES: Array<{ file: string; tag: string }> = [
   { file: 'app/portal/[token]/page.tsx',   tag: 'portal' },
 ]
 
-const ALL_TAGS = [...BOUNDARIES.map(b => b.tag), 'export-pdf', 'export-pptx']
+const ALL_TAGS = [...BOUNDARIES.map(b => b.tag), 'export-pdf', 'export-pptx', 'onboarding-review']
 
 // Identifiers that must never appear on a line logging an unresolved
 // placeholder detection — these would indicate private QBR content leaking
@@ -149,5 +149,64 @@ describe('unresolved-placeholder logging — export-pdf/export-pptx share one ga
     const pptxSource = fs.readFileSync(path.join(ROOT, 'app/api/export-pptx/route.ts'), 'utf8')
     expect(pdfSource).not.toContain('[unresolved-placeholder]')
     expect(pptxSource).not.toContain('[unresolved-placeholder]')
+  })
+})
+
+// Hotfix: the onboarding Review screen (Screen 5) was the one boundary that
+// rendered anchoredQbr.slides/summary raw, skipping resolveSlides/
+// sanitizeResolvedSlides entirely — the exact defect that leaked literal
+// {{healthScore}}/{{healthStatus}} tokens into Production. This boundary uses
+// `anchoredQbr` (not `qbr`) as its local variable name, so it gets its own
+// block rather than joining the generic describe.each(BOUNDARIES) above,
+// which hardcodes `qbr.id`.
+describe('unresolved-placeholder logging — onboarding Review screen (app/onboarding/[step]/page.tsx)', () => {
+  const pageSource = fs.readFileSync(path.join(ROOT, 'app/onboarding/[step]/page.tsx'), 'utf8')
+
+  it('contains its approved fixed context log call [unresolved-placeholder][onboarding-review]', () => {
+    expect(pageSource).toContain("console.error('[unresolved-placeholder][onboarding-review]', anchoredQbr.id)")
+  })
+
+  it('is gated behind hadUnresolvedTokens, not unconditional', () => {
+    const idx = pageSource.indexOf("console.error('[unresolved-placeholder][onboarding-review]', anchoredQbr.id)")
+    expect(idx).toBeGreaterThan(-1)
+    const preceding = pageSource.slice(Math.max(0, idx - 200), idx)
+    expect(preceding).toMatch(/if\s*\([^)]*hadUnresolvedTokens[^)]*\)/)
+  })
+
+  it('does not contain any other boundary\'s fixed context tag', () => {
+    for (const tag of BOUNDARIES.map(b => b.tag).concat(['export-pdf', 'export-pptx'])) {
+      expect(pageSource).not.toContain(`[unresolved-placeholder][${tag}]`)
+    }
+  })
+
+  it('logs no client names, slide content, metrics, priorities, or recommendations on the logging line', () => {
+    const loggingLines = pageSource.split('\n').filter(l => l.includes('[unresolved-placeholder]'))
+    expect(loggingLines.length).toBeGreaterThan(0)
+    for (const line of loggingLines) {
+      expect(line).toContain('anchoredQbr.id')
+      const lower = line.toLowerCase()
+      for (const term of FORBIDDEN_TERMS) {
+        if (term === 'placeholder]') continue
+        expect(lower).not.toContain(term)
+      }
+    }
+  })
+
+  it('imports buildPlaceholderContext/resolveSlides/sanitizeResolvedSlides from lib/placeholders, and resolves before sanitizing', () => {
+    expect(pageSource).toMatch(/import\s*\{[^}]*buildPlaceholderContext[^}]*resolveSlides[^}]*sanitizeResolvedSlides[^}]*\}\s*from\s*['"]@\/lib\/placeholders['"]/)
+    const resolveIdx = pageSource.indexOf('resolveSlides(')
+    const sanitizeIdx = pageSource.indexOf('sanitizeResolvedSlides(')
+    expect(resolveIdx).toBeGreaterThan(-1)
+    expect(sanitizeIdx).toBeGreaterThan(resolveIdx)
+  })
+
+  it('never passes anchoredQbr.slides or anchoredQbr.summary directly to ReviewQbrScreen', () => {
+    const reviewJsxMatch = pageSource.match(/<ReviewQbrScreen[\s\S]*?\/>/)
+    expect(reviewJsxMatch).not.toBeNull()
+    const jsx = reviewJsxMatch?.[0] ?? ''
+    expect(jsx).not.toMatch(/slides=\{\s*\(?anchoredQbr\.slides/)
+    expect(jsx).not.toMatch(/summary=\{anchoredQbr\.summary\}/)
+    expect(jsx).not.toMatch(/summary=/)
+    expect(jsx).toMatch(/slides=\{safeResolvedSlides\}/)
   })
 })

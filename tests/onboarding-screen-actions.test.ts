@@ -227,6 +227,26 @@ describe('Review QBR screen — read-only, no dashboard-editor escape, Continue 
   it('guards against duplicate submission while a request is in flight', () => {
     expect(reviewQbrSource).toMatch(/async function handleContinue\(\) \{\s*if \(loading\) return/)
   })
+
+  // Hotfix regression: this component previously accepted a raw `summary`
+  // prop straight from the QBR row (an unresolved snapshot of slides[0]
+  // content), rendering literal {{healthScore}}/{{healthStatus}} tokens in
+  // Production. The prop contract no longer exists — the intro text is
+  // derived from the already-resolved `slides` prop instead.
+  it('has no raw summary prop in its contract — Props type carries no summary field', () => {
+    const propsTypeMatch = reviewQbrSource.match(/type Props = \{[\s\S]*?\n\}/)
+    expect(propsTypeMatch).not.toBeNull()
+    expect(propsTypeMatch?.[0] ?? '').not.toMatch(/\bsummary\s*:/)
+  })
+
+  it('does not destructure a summary prop from its function signature', () => {
+    expect(reviewQbrSource).toMatch(/export function ReviewQbrScreen\(\{ clientName, quarter, year, healthScore, healthStatus, slides \}: Props\)/)
+  })
+
+  it('derives its intro text from the already-resolved slides[0] content, not a separate raw field', () => {
+    expect(reviewQbrSource).toMatch(/const introText = slides\[0\]\?\.content \?\? null/)
+    expect(reviewQbrSource).toMatch(/\{introText && \(/)
+  })
 })
 
 describe('Export QBR screen — anchored export only, LIMIT_REACHED never removes Skip, Continue gated on a real success', () => {

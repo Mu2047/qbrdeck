@@ -3,6 +3,8 @@ import { redirect, notFound } from 'next/navigation'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceContext } from '@/lib/workspace'
 import { canInviteMoreMembers } from '@/lib/permissions'
+import { resolveBranding, buildFooterText } from '@/lib/branding'
+import { buildPlaceholderContext, resolveSlides, sanitizeResolvedSlides } from '@/lib/placeholders'
 import { shouldInterceptOnboarding, isStepImplemented, slugToStep, stepToSlug } from '@/lib/onboarding'
 import { WelcomeScreen } from '../_screens/welcome'
 import { WorkspaceNameScreen } from '../_screens/workspace-name'
@@ -113,6 +115,51 @@ export default async function OnboardingStepPage({ params }: { params: { step: s
 
     if (!anchoredQbr) redirect('/dashboard')
 
+    // ── Resolve placeholders — same established boundary as the dashboard
+    // GET /api/qbrs/[qbrId], the public portal, and the export helper.
+    // anchoredQbr.slides is persisted raw/unresolved by design (the QBR
+    // generator writes {{healthScore}}/{{healthStatus}}/etc. into slide
+    // content); every read-time renderer is responsible for resolving it —
+    // this screen was the one place that skipped that step. anchoredQbr.slides
+    // itself is never mutated; resolveSlides returns a new array. ───────────
+    const branding = resolveBranding({
+      plan:          ctx.subscription?.plan ?? 'FREE',
+      workspaceName: ctx.workspace.name,
+    })
+
+    const footerText = buildFooterText({
+      branding,
+      clientName: anchoredQbr.client.name,
+      quarter:    anchoredQbr.quarter,
+      year:       anchoredQbr.year,
+    })
+
+    const placeholderCtx = buildPlaceholderContext({
+      clientName:     anchoredQbr.client.name,
+      clientIndustry: anchoredQbr.client.industry,
+      quarter:        anchoredQbr.quarter,
+      year:           anchoredQbr.year,
+      workspaceName:  ctx.workspace.name,
+      mspName:        branding.mspName,
+      healthScore:    anchoredQbr.healthScore,
+      healthStatus:   anchoredQbr.healthStatus,
+      branding:       { ...branding, footerText },
+      generatedAt:    anchoredQbr.createdAt,
+    })
+
+    const resolvedSlides = resolveSlides(
+      (anchoredQbr.slides as Array<Record<string, unknown>>) ?? [],
+      placeholderCtx
+    )
+
+    // ── Defensive guard: sanitize the display copy before it ever reaches
+    // the client — same pattern as every other QBR renderer. Raw
+    // anchoredQbr.slides (and the stored DB value) stays untouched. ─────────
+    const { slides: safeResolvedSlides, hadUnresolvedTokens } = sanitizeResolvedSlides(resolvedSlides)
+    if (hadUnresolvedTokens) {
+      console.error('[unresolved-placeholder][onboarding-review]', anchoredQbr.id)
+    }
+
     return (
       <ReviewQbrScreen
         clientName={anchoredQbr.client.name}
@@ -120,8 +167,7 @@ export default async function OnboardingStepPage({ params }: { params: { step: s
         year={anchoredQbr.year}
         healthScore={anchoredQbr.healthScore}
         healthStatus={anchoredQbr.healthStatus}
-        summary={anchoredQbr.summary}
-        slides={(anchoredQbr.slides as any[]) ?? []}
+        slides={safeResolvedSlides}
       />
     )
   }
