@@ -25,7 +25,7 @@ import { sendQBREmail } from '@/lib/email'
 
 const PAGE_PATH = join(
   process.cwd(),
-  'app/(app)/dashboard/clients/[id]/qbr/[qbrId]/page.tsx'
+  'app/(app)/dashboard/(gated)/clients/[id]/qbr/[qbrId]/page.tsx'
 )
 const pageSource = readFileSync(PAGE_PATH, 'utf-8')
 

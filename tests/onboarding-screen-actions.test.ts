@@ -52,43 +52,35 @@ describe('Welcome screen — advances to WORKSPACE_NAME, then navigates only on 
   })
 })
 
-describe('Workspace Name screen — PATCH workspace name, then advance, in strict order', () => {
-  it('PATCHes /api/workspace before ever calling the advance endpoint', () => {
-    const patchIdx = workspaceNameSource.indexOf("fetch('/api/workspace'")
-    const advanceIdx = workspaceNameSource.indexOf("fetch('/api/onboarding/advance'")
-    expect(patchIdx).toBeGreaterThan(-1)
-    expect(advanceIdx).toBeGreaterThan(-1)
-    expect(patchIdx).toBeLessThan(advanceIdx)
+describe('Workspace Name screen — one atomic dedicated-endpoint call, no split PATCH+advance', () => {
+  it('calls the dedicated POST /api/onboarding/workspace-name endpoint exactly once', () => {
+    const fetchOccurrences = workspaceNameSource.match(/fetch\(/g) ?? []
+    expect(fetchOccurrences.length).toBe(1)
+    expect(workspaceNameSource).toMatch(/fetch\('\/api\/onboarding\/workspace-name', \{\s*method:\s*'POST',/)
   })
 
-  it('uses PATCH method against /api/workspace with the existing { name } contract', () => {
-    expect(workspaceNameSource).toMatch(/method:\s*'PATCH',/)
+  it('never calls the generic PATCH /api/workspace or the generic advance endpoint from this screen', () => {
+    expect(workspaceNameSource).not.toMatch(/fetch\('\/api\/workspace'/)
+    expect(workspaceNameSource).not.toMatch(/fetch\('\/api\/onboarding\/advance'/)
+    expect(workspaceNameSource).not.toMatch(/method:\s*'PATCH'/)
+  })
+
+  it('sends only { name: trimmed } in the body', () => {
     expect(workspaceNameSource).toMatch(/body:\s*JSON\.stringify\(\{ name: trimmed \}\)/)
   })
 
-  it('advance is not attempted if the PATCH failed — the failure throw sits between the two fetch calls', () => {
-    const patchIdx = workspaceNameSource.indexOf("fetch('/api/workspace'")
-    const patchThrowIdx = workspaceNameSource.indexOf('Failed to save workspace name')
-    const advanceIdx = workspaceNameSource.indexOf("fetch('/api/onboarding/advance'")
-    expect(patchIdx).toBeLessThan(patchThrowIdx)
-    expect(patchThrowIdx).toBeLessThan(advanceIdx)
+  it('navigates to /onboarding/first-client on success — never /dashboard', () => {
+    expect(workspaceNameSource).toMatch(/router\.push\('\/onboarding\/first-client'\)/)
+    expect(workspaceNameSource).not.toMatch(/router\.push\(['"`]\/dashboard/)
   })
 
-  it('advance body requests toStep: FIRST_CLIENT', () => {
-    expect(workspaceNameSource).toMatch(/body:\s*JSON\.stringify\(\{ toStep: 'FIRST_CLIENT' \}\)/)
-  })
-
-  it('on successful FIRST_CLIENT advancement, navigates to /dashboard — never calls router.push toward /onboarding/first-client (a comment explaining why is fine)', () => {
-    expect(workspaceNameSource).toMatch(/router\.push\('\/dashboard'\)/)
-    expect(workspaceNameSource).not.toMatch(/router\.push\(['"`]\/onboarding\/first-client/)
-  })
-
-  it('navigation happens only after the advance call resolves successfully, not before', () => {
-    const advanceIdx = workspaceNameSource.indexOf("fetch('/api/onboarding/advance'")
-    const advanceThrowIdx = workspaceNameSource.indexOf('Failed to continue')
-    const navIdx = workspaceNameSource.indexOf("router.push('/dashboard')")
-    expect(advanceIdx).toBeLessThan(advanceThrowIdx)
-    expect(advanceThrowIdx).toBeLessThan(navIdx)
+  it('navigation happens only after the endpoint call resolves successfully, not before', () => {
+    const fetchIdx = workspaceNameSource.indexOf("fetch('/api/onboarding/workspace-name'")
+    const throwIdx = workspaceNameSource.indexOf('Failed to save workspace name')
+    const navIdx = workspaceNameSource.indexOf("router.push('/onboarding/first-client')")
+    expect(fetchIdx).toBeGreaterThan(-1)
+    expect(fetchIdx).toBeLessThan(throwIdx)
+    expect(throwIdx).toBeLessThan(navIdx)
   })
 
   it('requires a non-empty trimmed name before submitting', () => {
@@ -117,8 +109,16 @@ describe('First Client screen — no render-time key writes, no browser-authorit
     expect(firstClientSource).toMatch(/function ensureKey\(\) \{\s*if \(!keyRef\.current\) keyRef\.current = crypto\.randomUUID\(\)/)
   })
 
-  it('attach mode POSTs only { mode: "attach", retryKey } — no clientId/existingClientId/workspaceId in the body', () => {
-    expect(firstClientSource).toMatch(/body:\s*JSON\.stringify\(\{ mode: 'attach', retryKey \}\)/)
+  it('attach mode POSTs { mode: "attach", retryKey } without clientId when omitted, and includes clientId only when supplied', () => {
+    expect(firstClientSource).toMatch(/body:\s*JSON\.stringify\(clientId \? \{ mode: 'attach', retryKey, clientId \} : \{ mode: 'attach', retryKey \}\)/)
+  })
+
+  it('submitAttach never includes existingClientId or workspaceId in its request body', () => {
+    const submitAttachMatch = firstClientSource.match(/async function submitAttach\([\s\S]*?\n  \}/)
+    expect(submitAttachMatch).not.toBeNull()
+    const body = submitAttachMatch?.[0] ?? ''
+    expect(body).not.toMatch(/existingClientId/)
+    expect(body).not.toMatch(/workspaceId/)
   })
 
   it('create mode never includes clientId, existingClientId, workspaceId, or userId in its request body', () => {
@@ -136,25 +136,43 @@ describe('First Client screen — no render-time key writes, no browser-authorit
     expect(navOccurrences.length).toBe(2)
   })
 
-  it('the 2+ existing-client state renders no fetch call and only a "Return to dashboard" navigation', () => {
-    const multiClientBlock = firstClientSource.match(/if \(existingClientCount > 1\) \{[\s\S]*?\n  \}/)
-    expect(multiClientBlock).not.toBeNull()
-    const block = multiClientBlock?.[0] ?? ''
-    expect(block).not.toMatch(/fetch\(/)
-    expect(block).toMatch(/router\.push\('\/dashboard'\)/)
-    expect(block).toMatch(/Choose a client later/)
+  // Hotfix regression: the 2+ state used to be a dead-end ("Return to
+  // dashboard") — now that the dashboard gate is authoritative, that would
+  // just redirect straight back here. See P2 onboarding PR 8 preflight,
+  // "First Client — 2+ selector" / "Multi-client reattach risk".
+  it('the 2+ existing-client state renders a selector, never a "Return to dashboard" dead-end', () => {
+    const multiClientBlockMatch = firstClientSource.match(/if \(existingClientCount > 1\) \{[\s\S]*?\n  \}/)
+    expect(multiClientBlockMatch).not.toBeNull()
+    const block = multiClientBlockMatch?.[0] ?? ''
+    expect(block).not.toMatch(/router\.push\('\/dashboard'\)/)
+    expect(block).not.toMatch(/Return to dashboard/)
+    expect(block).toMatch(/type="radio"/)
+    expect(block).toMatch(/onClick=\{\(\) => selected && submitAttach\(selected\.id\)\}/)
+  })
+
+  it('the 2+ selector renders only the server-provided existingClients list, and no create-form inputs', () => {
+    const multiClientBlockMatch = firstClientSource.match(/if \(existingClientCount > 1\) \{[\s\S]*?\n  \}/)
+    const block = multiClientBlockMatch?.[0] ?? ''
+    expect(block).toMatch(/existingClients\.map\(/)
+    expect(block).not.toMatch(/<input\s+className="input"/)
+  })
+
+  it('the 2+ selector submits with the exact selected candidate id, never a hardcoded or arbitrary one', () => {
+    const multiClientBlockMatch = firstClientSource.match(/if \(existingClientCount > 1\) \{[\s\S]*?\n  \}/)
+    const block = multiClientBlockMatch?.[0] ?? ''
+    expect(block).toMatch(/const selected = existingClients\.find\(c => c\.id === selectedClientId\) \?\? existingClients\[0\]/)
   })
 
   it('the single-existing-client state renders an attach action, not a create form', () => {
     const soleClientBlock = firstClientSource.match(/if \(existingClientCount === 1 && soleExistingClientName\) \{[\s\S]*?\n  \}/)
     expect(soleClientBlock).not.toBeNull()
     const block = soleClientBlock?.[0] ?? ''
-    expect(block).toMatch(/onClick=\{submitAttach\}/)
+    expect(block).toMatch(/onClick=\{\(\) => submitAttach\(\)\}/)
     expect(block).not.toMatch(/onClick=\{submitCreate\}/)
   })
 
   it('guards against duplicate submission while a request is in flight, for both actions', () => {
-    expect(firstClientSource).toMatch(/async function submitAttach\(\) \{\s*if \(loading\) return/)
+    expect(firstClientSource).toMatch(/async function submitAttach\(clientId\?: string\) \{\s*if \(loading\) return/)
     expect(firstClientSource).toMatch(/async function submitCreate\(\) \{\s*if \(loading\) return/)
   })
 })

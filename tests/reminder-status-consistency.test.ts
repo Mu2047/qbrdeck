@@ -16,9 +16,9 @@ function readSourceLF(relativePath: string): string {
   return readFileSync(join(process.cwd(), relativePath), 'utf-8').replace(/\r\n/g, '\n')
 }
 
-const clientPageSource     = readSourceLF('app/(app)/dashboard/clients/[id]/page.tsx')
+const clientPageSource     = readSourceLF('app/(app)/dashboard/(gated)/clients/[id]/page.tsx')
 const clientRouteSource    = readSourceLF('app/api/clients/[id]/route.ts')
-const dashboardSource      = readSourceLF('app/(app)/dashboard/page.tsx')
+const dashboardSource      = readSourceLF('app/(app)/dashboard/(gated)/page.tsx')
 const remindersRouteSource = readSourceLF('app/api/reminders/route.ts')
 const reminderUtilsSource  = readSourceLF('lib/reminder-utils.ts')
 const schemaSource         = readSourceLF('prisma/schema.prisma')

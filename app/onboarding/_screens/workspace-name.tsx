@@ -22,35 +22,25 @@ export function WorkspaceNameScreen({ initialName }: { initialName: string }) {
     setError('')
 
     try {
-      // FIRST: the existing workspace-rename endpoint, unchanged contract.
-      const patchRes = await fetch('/api/workspace', {
-        method:  'PATCH',
+      // One atomic call: the dedicated onboarding endpoint renames the
+      // workspace and advances currentStep to FIRST_CLIENT together, in a
+      // single transaction — see P2 onboarding PR 8 preflight, "Workspace
+      // Name — must-fix". This is authorized by the exact anchored
+      // onboardingOwnerUserId, never by the generic PATCH /api/workspace's
+      // TeamRole OWNER requirement, so a creator demoted from OWNER mid-onboarding
+      // is never stranded here.
+      const res = await fetch('/api/onboarding/workspace-name', {
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ name: trimmed }),
       })
-      const patchData = await patchRes.json()
+      const data = await res.json()
 
-      if (!patchRes.ok) {
-        throw new Error(typeof patchData.error === 'string' ? patchData.error : 'Failed to save workspace name')
+      if (!res.ok) {
+        throw new Error(typeof data.error === 'string' ? data.error : 'Failed to save workspace name')
       }
 
-      // SECOND: only after the name write has actually succeeded — never
-      // attempted if the PATCH above failed.
-      const advanceRes = await fetch('/api/onboarding/advance', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ toStep: 'FIRST_CLIENT' }),
-      })
-      const advanceData = await advanceRes.json()
-
-      if (!advanceRes.ok) {
-        throw new Error(typeof advanceData.error === 'string' ? advanceData.error : 'Failed to continue')
-      }
-
-      // FIRST_CLIENT has no screen in this deployment yet — the onboarding
-      // row is now durably at FIRST_CLIENT, and normal product access is the
-      // intentional temporary fail-open target, not /onboarding/first-client.
-      router.push('/dashboard')
+      router.push('/onboarding/first-client')
     } catch (e: any) {
       setError(e.message)
       setLoading(false)

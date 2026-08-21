@@ -87,15 +87,20 @@ export function isStepImplemented(step: OnboardingStep): boolean {
 // slice. Intentionally not a generic state machine over all OnboardingStep
 // values — adding a transition requires an explicit new entry, never a loop.
 // Only UI-only transitions belong here: ones that write nothing but
-// currentStep. FIRST_CLIENT->FIRST_QBR (Client attach/create) and
-// FIRST_QBR->REVIEW_QBR (QBR persistence) are resource-creating and stay in
-// their own dedicated routes; EXPORT_QBR->SHARE_QBR and SHARE_QBR->COMPLETE
-// have a *different* write (a skip marker) on their explicit-Skip path, so
-// that path lives in /api/onboarding/skip instead — this table only ever
-// covers the plain "Continue" path for each of those two steps.
+// currentStep. WORKSPACE_NAME->FIRST_CLIENT used to live here too, but PR 8
+// replaced it with a dedicated POST /api/onboarding/workspace-name endpoint
+// (one transaction: workspace rename + onboarding claim together) — see P2
+// onboarding PR 8 preflight, "Workspace Name — must-fix". Keeping the old
+// transition here as well would leave a second, non-atomic path to the same
+// state change, so it was removed rather than left as an unused alternate.
+// FIRST_CLIENT->FIRST_QBR (Client attach/create) and FIRST_QBR->REVIEW_QBR
+// (QBR persistence) are resource-creating and stay in their own dedicated
+// routes; EXPORT_QBR->SHARE_QBR and SHARE_QBR->COMPLETE have a *different*
+// write (a skip marker) on their explicit-Skip path, so that path lives in
+// /api/onboarding/skip instead — this table only ever covers the plain
+// "Continue" path for each of those two steps.
 const ADVANCE_TRANSITIONS = {
   WORKSPACE_NAME: 'WELCOME',
-  FIRST_CLIENT:   'WORKSPACE_NAME',
   EXPORT_QBR:     'REVIEW_QBR',
   SHARE_QBR:      'EXPORT_QBR',
   COMPLETE:       'SHARE_QBR',

@@ -72,16 +72,21 @@ describe('isStepImplemented — allowlist for this deployment', () => {
   })
 })
 
-describe('isAdvanceableStep — the five UI-only "Continue" transitions this slice supports', () => {
-  it.each(['WORKSPACE_NAME', 'FIRST_CLIENT', 'EXPORT_QBR', 'SHARE_QBR', 'COMPLETE'])(
+describe('isAdvanceableStep — the four UI-only "Continue" transitions this slice supports', () => {
+  it.each(['WORKSPACE_NAME', 'EXPORT_QBR', 'SHARE_QBR', 'COMPLETE'])(
     '%s is advanceable',
     (value) => {
       expect(isAdvanceableStep(value)).toBe(true)
     }
   )
 
-  it.each(['WELCOME', 'FIRST_QBR', 'REVIEW_QBR', 'BOGUS'])(
-    '%s is not advanceable — FIRST_QBR/REVIEW_QBR are resource-dependent transitions handled by their own routes, not generic advance',
+  // PR 8: FIRST_CLIENT moved off generic advance entirely — it now happens
+  // only through the dedicated, atomic POST /api/onboarding/workspace-name
+  // transaction (workspace rename + claim together), never a plain
+  // "Continue" write. See P2 onboarding PR 8 preflight, "Workspace Name —
+  // must-fix" / "generic advance transition".
+  it.each(['WELCOME', 'FIRST_CLIENT', 'FIRST_QBR', 'REVIEW_QBR', 'BOGUS'])(
+    '%s is not advanceable — FIRST_CLIENT/FIRST_QBR/REVIEW_QBR are resource-dependent transitions handled by their own dedicated routes, not generic advance',
     (value) => {
       expect(isAdvanceableStep(value)).toBe(false)
     }
@@ -91,10 +96,6 @@ describe('isAdvanceableStep — the five UI-only "Continue" transitions this sli
 describe('requiredFromStepFor — the exact fixed transition table for this slice', () => {
   it('WORKSPACE_NAME requires the row to currently be at WELCOME', () => {
     expect(requiredFromStepFor('WORKSPACE_NAME')).toBe('WELCOME')
-  })
-
-  it('FIRST_CLIENT requires the row to currently be at WORKSPACE_NAME', () => {
-    expect(requiredFromStepFor('FIRST_CLIENT')).toBe('WORKSPACE_NAME')
   })
 
   it('EXPORT_QBR requires the row to currently be at REVIEW_QBR', () => {
