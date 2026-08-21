@@ -1,9 +1,12 @@
 import { auth } from '@clerk/nextjs/server'
 import { redirect, notFound } from 'next/navigation'
+import { prisma } from '@/lib/prisma'
 import { getWorkspaceContext } from '@/lib/workspace'
 import { shouldInterceptOnboarding, isStepImplemented, slugToStep, stepToSlug } from '@/lib/onboarding'
 import { WelcomeScreen } from '../_screens/welcome'
 import { WorkspaceNameScreen } from '../_screens/workspace-name'
+import { FirstClientScreen } from '../_screens/first-client'
+import { FirstQbrScreen } from '../_screens/first-qbr'
 
 // Authorization precedence is load-bearing — see P2 onboarding preflight.
 // Order must not change without re-deriving it:
@@ -45,7 +48,40 @@ export default async function OnboardingStepPage({ params }: { params: { step: s
   if (currentStep === 'WELCOME') return <WelcomeScreen />
   if (currentStep === 'WORKSPACE_NAME') return <WorkspaceNameScreen initialName={ctx.workspace.name} />
 
+  // Read-only lookups for this render — no writes happen here. Idempotency
+  // keys are generated client-side, lazily, on first submit — never during
+  // server render. See P2 onboarding preflight, Correction 1.
+  if (currentStep === 'FIRST_CLIENT') {
+    const [onboardingRow, existingClients] = await Promise.all([
+      prisma.workspaceOnboarding.findUnique({
+        where: { workspaceId: ctx.workspaceId },
+        select: { clientStepIdempotencyKey: true },
+      }),
+      prisma.client.findMany({
+        where: { workspaceId: ctx.workspaceId, deletedAt: null },
+        select: { id: true, name: true },
+      }),
+    ])
+
+    return (
+      <FirstClientScreen
+        persistedKey={onboardingRow?.clientStepIdempotencyKey ?? null}
+        existingClientCount={existingClients.length}
+        soleExistingClientName={existingClients.length === 1 ? existingClients[0].name : null}
+      />
+    )
+  }
+
+  if (currentStep === 'FIRST_QBR') {
+    const onboardingRow = await prisma.workspaceOnboarding.findUnique({
+      where: { workspaceId: ctx.workspaceId },
+      select: { qbrStepIdempotencyKey: true },
+    })
+
+    return <FirstQbrScreen persistedKey={onboardingRow?.qbrStepIdempotencyKey ?? null} />
+  }
+
   // Unreachable: isStepImplemented above already narrowed currentStep to
-  // WELCOME or WORKSPACE_NAME for this deployment.
+  // one of the four steps handled above for this deployment.
   notFound()
 }

@@ -84,4 +84,21 @@ describe('onboarding [step] page — renders only for the exact matching, implem
     expect(pageSource).toMatch(/if \(currentStep === 'WELCOME'\) return <WelcomeScreen \/>/)
     expect(pageSource).toMatch(/if \(currentStep === 'WORKSPACE_NAME'\) return <WorkspaceNameScreen initialName=\{ctx\.workspace\.name\} \/>/)
   })
+
+  it('renders FirstClientScreen for FIRST_CLIENT with read-only, workspace-scoped Prisma lookups only', () => {
+    expect(pageSource).toMatch(/if \(currentStep === 'FIRST_CLIENT'\) \{/)
+    expect(pageSource).toMatch(/<FirstClientScreen/)
+    expect(pageSource).toMatch(/prisma\.workspaceOnboarding\.findUnique\(\{\s*where:\s*\{ workspaceId: ctx\.workspaceId \},\s*select:\s*\{ clientStepIdempotencyKey: true \},/)
+    expect(pageSource).toMatch(/prisma\.client\.findMany\(\{\s*where:\s*\{ workspaceId: ctx\.workspaceId, deletedAt: null \},/)
+  })
+
+  it('renders FirstQbrScreen for FIRST_QBR with a read-only, workspace-scoped Prisma lookup only', () => {
+    expect(pageSource).toMatch(/if \(currentStep === 'FIRST_QBR'\) \{/)
+    expect(pageSource).toMatch(/<FirstQbrScreen persistedKey=\{onboardingRow\?\.qbrStepIdempotencyKey \?\? null\} \/>/)
+    expect(pageSource).toMatch(/prisma\.workspaceOnboarding\.findUnique\(\{\s*where:\s*\{ workspaceId: ctx\.workspaceId \},\s*select:\s*\{ qbrStepIdempotencyKey: true \},/)
+  })
+
+  it('never performs a write (create/update/upsert/delete) anywhere in this render-only page', () => {
+    expect(pageSource).not.toMatch(/prisma\.\w+\.(create|update|upsert|delete|updateMany|deleteMany)\(/)
+  })
 })

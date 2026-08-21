@@ -71,6 +71,8 @@ export function slugToStep(slug: string): OnboardingStep | undefined {
 const IMPLEMENTED_STEPS: ReadonlySet<OnboardingStep> = new Set<OnboardingStep>([
   'WELCOME',
   'WORKSPACE_NAME',
+  'FIRST_CLIENT',
+  'FIRST_QBR',
 ])
 
 export function isStepImplemented(step: OnboardingStep): boolean {
