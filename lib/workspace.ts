@@ -140,10 +140,23 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
   }
 
   // No workspace yet — create one. Workspace + OWNER WorkspaceMember +
-  // WorkspaceOnboarding(IN_PROGRESS, WELCOME, creator anchor) must commit as
-  // a single atomic nested write: if the onboarding create fails, the whole
-  // workspace.create must fail with it, so we never end up with a workspace
-  // that has an OWNER but no onboarding enrollment.
+  // WorkspaceOnboarding must commit as a single atomic nested write: if the
+  // onboarding create fails, the whole workspace.create must fail with it,
+  // so we never end up with a workspace that has an OWNER but no onboarding
+  // row at all.
+  //
+  // Enrollment shares the EXACT same activation boundary as dashboard
+  // interception (app/(app)/dashboard/(gated)/layout.tsx) — the identical
+  // `=== 'true'` literal check, no second env var. While the gate is off, a
+  // workspace created here must never receive a live IN_PROGRESS row: that
+  // row would silently become interceptable the instant the gate is later
+  // enabled, retroactively forcing an onboarding flow on a user who was
+  // never shown one at signup (see P2 onboarding PR 9 activation-boundary
+  // correction). Instead it is created permanently EXEMPT
+  // ('pre_activation_gate_disabled') — gate-off enrollment never
+  // manufactures onboarding eligibility later.
+  const onboardingGateEnabled = process.env.ONBOARDING_GATE_ENABLED === 'true'
+
   const workspace = await prisma.workspace.create({
     data: {
       name: user.name ?? user.email.split('@')[0] ?? 'My Workspace',
@@ -154,12 +167,27 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
         },
       },
       onboarding: {
-        create: {
-          status:                'IN_PROGRESS',
-          currentStep:           'WELCOME',
-          onboardingOwnerUserId: user.id,
-          startedAt:             new Date(),
-        },
+        create: onboardingGateEnabled
+          ? {
+              status:                'IN_PROGRESS',
+              currentStep:           'WELCOME',
+              onboardingOwnerUserId: user.id,
+              startedAt:             new Date(),
+            }
+          : {
+              status:                   'EXEMPT',
+              currentStep:              null,
+              onboardingOwnerUserId:    null,
+              onboardingClientId:       null,
+              onboardingQbrId:          null,
+              clientStepIdempotencyKey: null,
+              qbrStepIdempotencyKey:    null,
+              exportSkippedAt:          null,
+              shareSkippedAt:           null,
+              exemptReason:             'pre_activation_gate_disabled',
+              startedAt:                null,
+              completedAt:              null,
+            },
       },
     },
     include: { subscription: true, onboarding: true },
