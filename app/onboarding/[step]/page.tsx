@@ -64,17 +64,20 @@ export default async function OnboardingStepPage({ params }: { params: { step: s
         where: { workspaceId: ctx.workspaceId },
         select: { clientStepIdempotencyKey: true },
       }),
+      // Minimal fields only (id/name) — this is the exact candidate set the
+      // 2+ selector may choose from, deterministically ordered. See P2
+      // onboarding PR 8 preflight, "Server page client list".
       prisma.client.findMany({
         where: { workspaceId: ctx.workspaceId, deletedAt: null },
         select: { id: true, name: true },
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
       }),
     ])
 
     return (
       <FirstClientScreen
         persistedKey={onboardingRow?.clientStepIdempotencyKey ?? null}
-        existingClientCount={existingClients.length}
-        soleExistingClientName={existingClients.length === 1 ? existingClients[0].name : null}
+        existingClients={existingClients}
       />
     )
   }

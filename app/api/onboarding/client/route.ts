@@ -11,9 +11,17 @@ import { getLimits, isUnderLimit } from '@/lib/limits'
 // tests/onboarding-client-schema-parity.test.ts, not by a shared import.
 // The generic Client API (app/api/clients/route.ts) is never modified by
 // this endpoint's existence.
+// clientId is optional — required only when the server-resolved candidate
+// set has 2+ members (explicit multi-client selection); see P2 onboarding
+// PR 8 preflight, "First Client — 2+ selector". The browser never supplies
+// workspaceId/userId/ownerId; a supplied clientId is only ever compared
+// against the workspace-scoped candidate set re-queried server-side inside
+// the transaction below — it can never select a Client outside this
+// workspace or a soft-deleted one.
 const attachSchema = z.object({
   mode: z.literal('attach'),
   retryKey: z.string().uuid(),
+  clientId: z.string().optional(),
 }).strict()
 
 const createSchema = z.object({
@@ -91,7 +99,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (parsed.data.mode === 'attach') {
-      return await handleAttach(workspaceId, userId, retryKey)
+      return await handleAttach(workspaceId, userId, retryKey, parsed.data.clientId)
     }
     return await handleCreate(workspaceId, userId, retryKey, parsed.data, membership.subscription?.plan ?? 'FREE')
   } catch (err: any) {
@@ -122,16 +130,40 @@ async function tryReplay(
   return NextResponse.json({ id: client.id, name: client.name }, { status: 200 })
 }
 
-async function handleAttach(workspaceId: string, userId: string, retryKey: string) {
+async function handleAttach(workspaceId: string, userId: string, retryKey: string, requestedClientId?: string) {
   try {
     const client = await prisma.$transaction(async (tx) => {
-      // Server-resolved — the browser never supplies a clientId here.
+      // Server-resolved and re-fetched fresh at commit time — a browser-
+      // supplied clientId (only present for explicit 2+ selection) is never
+      // trusted on its own; it is only ever matched against this exact
+      // workspace-scoped, non-deleted candidate set queried right here.
       const candidates = await tx.client.findMany({
         where: { workspaceId, deletedAt: null },
         select: { id: true, name: true },
       })
-      if (candidates.length !== 1) throw new AttachCandidateMismatchError()
-      const existingClient = candidates[0]
+
+      let existingClient: { id: string; name: string }
+      if (candidates.length === 0) {
+        // No attachable candidate at all — attach mode should never be
+        // reachable in this shape, but never silently succeed regardless.
+        throw new AttachCandidateMismatchError()
+      } else if (candidates.length === 1) {
+        const onlyCandidate = candidates[0]
+        // clientId may be omitted for backward compatibility in the
+        // unique-candidate case, but a *supplied* mismatching id must never
+        // be silently ignored in favor of the sole candidate.
+        if (requestedClientId != null && requestedClientId !== onlyCandidate.id) {
+          throw new AttachCandidateMismatchError()
+        }
+        existingClient = onlyCandidate
+      } else {
+        // 2+ candidates — explicit selection is required, and the supplied
+        // id must match one of THIS workspace's non-deleted candidates.
+        if (requestedClientId == null) throw new AttachCandidateMismatchError()
+        const matched = candidates.find(c => c.id === requestedClientId)
+        if (!matched) throw new AttachCandidateMismatchError()
+        existingClient = matched
+      }
 
       const claim = await tx.workspaceOnboarding.updateMany({
         where: {

@@ -11,7 +11,7 @@ import { isAdvanceableStep, requiredFromStepFor } from '@/lib/onboarding'
 // move to. Identity (userId/workspaceId) and current state (fromStep) are
 // always re-derived server-side below, never taken from the request body.
 const advanceSchema = z.object({
-  toStep: z.enum(['WORKSPACE_NAME', 'FIRST_CLIENT', 'EXPORT_QBR', 'SHARE_QBR', 'COMPLETE']),
+  toStep: z.enum(['WORKSPACE_NAME', 'EXPORT_QBR', 'SHARE_QBR', 'COMPLETE']),
 }).strict()
 
 export async function POST(req: NextRequest) {

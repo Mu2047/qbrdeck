@@ -21,7 +21,7 @@ import { join } from 'path'
 //    through unchanged) is pinned to the real source by the source-contract
 //    tests in the same file, so the two cannot silently drift apart.
 
-const PAGE_PATH = join(process.cwd(), 'app/(app)/dashboard/clients/[id]/page.tsx')
+const PAGE_PATH = join(process.cwd(), 'app/(app)/dashboard/(gated)/clients/[id]/page.tsx')
 // Normalized to LF regardless of the checked-out line-ending style.
 const pageSource = readFileSync(PAGE_PATH, 'utf-8').replace(/\r\n/g, '\n')
 

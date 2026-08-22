@@ -30,7 +30,7 @@ import type { ApiResult } from '@/lib/api-client'
 
 const PAGE_PATH = join(
   process.cwd(),
-  'app/(app)/dashboard/clients/[id]/qbr/[qbrId]/page.tsx'
+  'app/(app)/dashboard/(gated)/clients/[id]/qbr/[qbrId]/page.tsx'
 )
 // Normalized to LF regardless of the checked-out line-ending style, so the
 // literal multi-line toContain() checks below aren't sensitive to CRLF.

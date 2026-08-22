@@ -48,23 +48,26 @@ describe('onboarding client route — strict body, no browser-supplied authority
     expect(routeSource).toMatch(/const createSchema = z\.object\(\{[\s\S]*?\}\)\.strict\(\)/)
   })
 
-  it('never reads clientId, existingClientId, workspaceId, userId, or ownerId from the parsed body', () => {
-    expect(routeSource).not.toMatch(/parsed\.data\.clientId/)
+  // PR 8: parsed.data.clientId is now legitimately read for attach mode's
+  // explicit 2+ candidate selection — see the dedicated attach describe
+  // block below for its validation rules. existingClientId/workspaceId/
+  // userId/ownerId remain never read from the body.
+  it('never reads existingClientId, workspaceId, userId, or ownerId from the parsed body', () => {
     expect(routeSource).not.toMatch(/parsed\.data\.existingClientId/)
     expect(routeSource).not.toMatch(/parsed\.data\.workspaceId/)
     expect(routeSource).not.toMatch(/parsed\.data\.userId/)
     expect(routeSource).not.toMatch(/parsed\.data\.ownerId/)
     expect(routeSource).not.toMatch(/body\.workspaceId/)
-    expect(routeSource).not.toMatch(/body\.clientId/)
   })
 
-  it('the attach-mode schema carries only mode and retryKey — no clientId field exists anywhere in its shape', () => {
+  it('the attach-mode schema carries mode, retryKey, and an optional clientId — nothing else', () => {
     const attachSchemaMatch = routeSource.match(/const attachSchema = z\.object\(\{([\s\S]*?)\}\)\.strict\(\)/)
     expect(attachSchemaMatch).not.toBeNull()
     const fields = attachSchemaMatch?.[1] ?? ''
     expect(fields).toMatch(/mode: z\.literal\('attach'\)/)
     expect(fields).toMatch(/retryKey: z\.string\(\)\.uuid\(\)/)
-    expect(fields).not.toMatch(/clientId/)
+    expect(fields).toMatch(/clientId: z\.string\(\)\.optional\(\)/)
+    expect(fields).not.toMatch(/workspaceId|userId|ownerId|existingClientId/)
   })
 })
 
@@ -126,10 +129,39 @@ describe('onboarding client route — fresh-path state guard is exact, never "fu
   })
 })
 
-describe('onboarding client route — attach mode server-resolves the unique candidate, never trusts a browser id', () => {
-  it('requires exactly one non-deleted Client, scoped to workspaceId, inside the transaction', () => {
+describe('onboarding client route — attach mode server-resolves candidates fresh, never trusts a browser id blindly', () => {
+  it('re-queries candidates scoped to workspaceId and deletedAt: null inside the transaction', () => {
     expect(routeSource).toMatch(/const candidates = await tx\.client\.findMany\(\{\s*where:\s*\{ workspaceId, deletedAt: null \},/)
-    expect(routeSource).toMatch(/if \(candidates\.length !== 1\) throw new AttachCandidateMismatchError\(\)/)
+  })
+
+  it('0 candidates always throws AttachCandidateMismatchError, regardless of any supplied clientId', () => {
+    const zeroBranchMatch = routeSource.match(/if \(candidates\.length === 0\) \{[\s\S]*?\n {6}\}/)
+    expect(zeroBranchMatch).not.toBeNull()
+    expect(zeroBranchMatch?.[0] ?? '').toMatch(/throw new AttachCandidateMismatchError\(\)/)
+  })
+
+  it('1 candidate: clientId is optional, but a supplied mismatching id is never silently ignored in favor of the sole candidate', () => {
+    const oneBranchMatch = routeSource.match(/\} else if \(candidates\.length === 1\) \{[\s\S]*?\n {6}\}/)
+    expect(oneBranchMatch).not.toBeNull()
+    const body = oneBranchMatch?.[0] ?? ''
+    expect(body).toMatch(/if \(requestedClientId != null && requestedClientId !== onlyCandidate\.id\) \{\s*throw new AttachCandidateMismatchError\(\)/)
+  })
+
+  it('2+ candidates: clientId is required and must match one of the workspace-scoped candidates exactly', () => {
+    const multiBranchMatch = routeSource.match(/\} else \{\s*\/\/ 2\+ candidates[\s\S]*?\n {6}\}/)
+    expect(multiBranchMatch).not.toBeNull()
+    const body = multiBranchMatch?.[0] ?? ''
+    expect(body).toMatch(/if \(requestedClientId == null\) throw new AttachCandidateMismatchError\(\)/)
+    expect(body).toMatch(/const matched = candidates\.find\(c => c\.id === requestedClientId\)/)
+    expect(body).toMatch(/if \(!matched\) throw new AttachCandidateMismatchError\(\)/)
+  })
+
+  it('the attach schema accepts an optional clientId — no workspaceId/userId/ownerId field exists anywhere in its shape', () => {
+    const attachSchemaMatch = routeSource.match(/const attachSchema = z\.object\(\{([\s\S]*?)\}\)\.strict\(\)/)
+    expect(attachSchemaMatch).not.toBeNull()
+    const fields = attachSchemaMatch?.[1] ?? ''
+    expect(fields).toMatch(/clientId: z\.string\(\)\.optional\(\)/)
+    expect(fields).not.toMatch(/workspaceId|userId|ownerId/)
   })
 
   it('attach mode never calls tx.client.create or prisma.client.count (it consumes no plan slot)', () => {

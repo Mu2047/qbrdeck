@@ -20,10 +20,6 @@ describe('advance route — the exact fixed transition table (real import, not a
     expect(requiredFromStepFor('WORKSPACE_NAME')).toBe('WELCOME')
   })
 
-  it('FIRST_CLIENT requires persisted currentStep WORKSPACE_NAME', () => {
-    expect(requiredFromStepFor('FIRST_CLIENT')).toBe('WORKSPACE_NAME')
-  })
-
   it('EXPORT_QBR requires persisted currentStep REVIEW_QBR', () => {
     expect(requiredFromStepFor('EXPORT_QBR')).toBe('REVIEW_QBR')
   })
@@ -54,8 +50,17 @@ describe('advance route — authentication and membership resolution', () => {
 })
 
 describe('advance route — request body accepts only toStep', () => {
-  it('the zod schema defines exactly one field: toStep, covering all five UI-only transitions', () => {
-    expect(routeSource).toMatch(/const advanceSchema = z\.object\(\{\s*toStep: z\.enum\(\['WORKSPACE_NAME', 'FIRST_CLIENT', 'EXPORT_QBR', 'SHARE_QBR', 'COMPLETE'\]\),\s*\}\)\.strict\(\)/)
+  it('the zod schema defines exactly one field: toStep, covering all four remaining UI-only transitions', () => {
+    expect(routeSource).toMatch(/const advanceSchema = z\.object\(\{\s*toStep: z\.enum\(\['WORKSPACE_NAME', 'EXPORT_QBR', 'SHARE_QBR', 'COMPLETE'\]\),\s*\}\)\.strict\(\)/)
+  })
+
+  // PR 8: WORKSPACE_NAME->FIRST_CLIENT moved to a dedicated, atomic
+  // POST /api/onboarding/workspace-name endpoint (workspace rename + claim
+  // in one transaction) — see P2 onboarding PR 8 preflight, "Workspace Name
+  // — must-fix". Generic advance no longer accepts FIRST_CLIENT as a
+  // target at all, closing the old non-atomic split-write path.
+  it('FIRST_CLIENT is no longer a valid toStep for generic advance', () => {
+    expect(routeSource).not.toMatch(/'FIRST_CLIENT'/)
   })
 
   it('never reads workspaceId, userId, onboardingOwnerUserId, fromStep, or role from the parsed request body', () => {
