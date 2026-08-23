@@ -157,8 +157,15 @@ describe('PATCH /api/clients/[id] — recomputes reminderStatus so post-edit sta
     expect(afterUpdate).toMatch(/getReminderStatus\(updated\.nextQbrDate\)/)
   })
 
-  it('this is the mechanism that prevents stale status after editing nextQbrDate: the client page replaces its state with the PATCH response (setClient(data)), so that response must itself carry a freshly computed status', () => {
-    expect(clientPageSource).toMatch(/const data = await res\.json\(\)[\s\S]{0,80}setClient\(data\)/)
+  it('this is the mechanism that prevents stale status after editing nextQbrDate: the client page merges the PATCH response over its previous state (data applied after prev, so data wins), so that response must itself carry a freshly computed status — see QBR-history-after-client-patch fix: PATCH responses are scalar-only, so a blind setClient(data) replace would drop relations like qbrs, but the merge still guarantees fresh fields (including reminderStatus) always win over their stale prev values', () => {
+    const saveEditSource = clientPageSource.slice(
+      clientPageSource.indexOf('async function saveEdit()'),
+      clientPageSource.indexOf('function cancelEdit()')
+    )
+    const dataIdx  = saveEditSource.search(/const data = await res\.json\(\)/)
+    const mergeIdx = saveEditSource.search(/setClient\(\(prev: any\) => \(\{ \.\.\.prev, \.\.\.data \}\)\)/)
+    expect(dataIdx).toBeGreaterThan(-1)
+    expect(mergeIdx).toBeGreaterThan(dataIdx)
   })
 })
 
@@ -311,7 +318,7 @@ describe('client detail page — inline reminder-date PATCH response-boundary gu
   it('checks res.ok before calling setClient, via the same throw-on-failure shape saveEdit() already uses', () => {
     const handler = extractQuickEditorHandler()
     const okCheckIdx   = handler.search(/if\s*\(!res\.ok\)\s*throw new Error\(data\.error\)/)
-    const setClientIdx = handler.search(/setClient\(data\)/)
+    const setClientIdx = handler.search(/setClient\(\(prev: any\) => \(\{ \.\.\.prev, \.\.\.data \}\)\)/)
     expect(okCheckIdx).toBeGreaterThan(-1)
     expect(setClientIdx).toBeGreaterThan(-1)
     expect(okCheckIdx).toBeLessThan(setClientIdx)
@@ -330,7 +337,7 @@ describe('client detail page — inline reminder-date PATCH response-boundary gu
     const tryBlock = handler.match(/try\s*\{[\s\S]*?\n\s*\} catch/)?.[0] ?? ''
     expect(tryBlock).not.toBe('')
     const throwIdx     = tryBlock.search(/throw new Error\(data\.error\)/)
-    const setClientIdx = tryBlock.search(/setClient\(data\)/)
+    const setClientIdx = tryBlock.search(/setClient\(\(prev: any\) => \(\{ \.\.\.prev, \.\.\.data \}\)\)/)
     expect(throwIdx).toBeGreaterThan(-1)
     expect(setClientIdx).toBeGreaterThan(-1)
     expect(throwIdx).toBeLessThan(setClientIdx)
@@ -356,10 +363,49 @@ describe('client detail page — saveEdit() protection is unchanged by this foll
     )
     expect(saveEditSource).toContain('if (!res.ok) throw new Error(data.error)')
     const okIdx = saveEditSource.search(/if \(!res\.ok\) throw new Error\(data\.error\)/)
-    const setClientIdx = saveEditSource.search(/setClient\(data\)/)
+    const setClientIdx = saveEditSource.search(/setClient\(\(prev: any\) => \(\{ \.\.\.prev, \.\.\.data \}\)\)/)
     expect(okIdx).toBeGreaterThan(-1)
     expect(setClientIdx).toBeGreaterThan(-1)
     expect(okIdx).toBeLessThan(setClientIdx)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// F. QBR-history-after-client-patch fix: exactly one plain setClient(data)
+// remains in the whole file (the initial GET), and both PATCH-success call
+// sites use the functional merge instead.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('client detail page — exactly one remaining plain setClient(data) call site (the initial GET)', () => {
+  it('there is exactly one literal setClient(data) in the whole file, and it is the initial GET inside useEffect', () => {
+    const plainCalls = clientPageSource.match(/setClient\(data\)/g) ?? []
+    expect(plainCalls.length).toBe(1)
+
+    const effectStart = clientPageSource.indexOf('useEffect(() => {')
+    const effectEnd    = clientPageSource.indexOf('}, [params.id])')
+    const plainCallIdx = clientPageSource.indexOf('setClient(data)')
+    expect(plainCallIdx).toBeGreaterThan(effectStart)
+    expect(plainCallIdx).toBeLessThan(effectEnd)
+  })
+
+  it('there are exactly two functional-merge setClient calls — one per PATCH success path (saveEdit and the quick date editor)', () => {
+    const mergeCalls = clientPageSource.match(/setClient\(\(prev: any\) => \(\{ \.\.\.prev, \.\.\.data \}\)\)/g) ?? []
+    expect(mergeCalls.length).toBe(2)
+  })
+
+  it('no successful PATCH handler in this file replaces state with the bare PATCH response anymore', () => {
+    const saveEditSource = clientPageSource.slice(
+      clientPageSource.indexOf('async function saveEdit()'),
+      clientPageSource.indexOf('function cancelEdit()')
+    )
+    const quickEditorAnchor = 'nextQbrDate: form.nextQbrDate ? new Date(form.nextQbrDate).toISOString() : null'
+    const quickEditorIdx = clientPageSource.indexOf(quickEditorAnchor)
+    const quickEditorHandler = clientPageSource.slice(
+      clientPageSource.lastIndexOf('onClick={async () => {', quickEditorIdx),
+      clientPageSource.indexOf('disabled={saving}', quickEditorIdx)
+    )
+    expect(saveEditSource).not.toMatch(/setClient\(data\)/)
+    expect(quickEditorHandler).not.toMatch(/setClient\(data\)/)
   })
 })
 

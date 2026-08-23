@@ -68,8 +68,8 @@ export default function ClientPage({ params }: { params: { id: string } }) {
       // snapshot. `client.name` here is this closure's pre-save value (React
       // hasn't re-rendered yet), compared against the server-confirmed
       // `data.name`. `client.qbrs` is likewise the pre-save array — PATCH's
-      // response never includes `qbrs` (Prisma's plain update() has no
-      // `include`), so reading the count from `data` after setClient(data)
+      // response never includes the qbrs relation (Prisma's plain update()
+      // has no `include`), so reading the count off the response body here
       // would always see undefined and permanently suppress the notice.
       const renamed = client.name !== data.name
       const hadQbrs = (client.qbrs?.length ?? 0) > 0
@@ -77,7 +77,12 @@ export default function ClientPage({ params }: { params: { id: string } }) {
       // zero pre-save QBRs) leaves an already-active notice exactly as it
       // was — this line never sets it to false.
       if (renamed && hadQbrs) setShowRenameExportNotice(true)
-      setClient(data)
+      // PATCH's response is scalar-only (no `qbrs` — see the comment above):
+      // merge over the previous state rather than replacing it, so relations
+      // the PATCH response never carries (qbrs) survive from `prev` while
+      // every field PATCH does return (name, industry, reminderStatus, ...)
+      // still overwrites its stale previous value.
+      setClient((prev: any) => ({ ...prev, ...data }))
       setEditing(false)
     } catch (e: any) {
       setError(e.message)
@@ -272,7 +277,10 @@ export default function ClientPage({ params }: { params: { id: string } }) {
                   // On failure, the previously valid client object is left
                   // exactly as it was — never overwritten with the error JSON.
                   if (!res.ok) throw new Error(data.error)
-                  setClient(data)
+                  // Same scalar-only PATCH response as saveEdit() above — merge
+                  // over the previous state so qbrs (never returned by PATCH)
+                  // survives while reminderStatus and nextQbrDate stay fresh.
+                  setClient((prev: any) => ({ ...prev, ...data }))
                 } catch (e: any) {
                   setError(e.message)
                 } finally {

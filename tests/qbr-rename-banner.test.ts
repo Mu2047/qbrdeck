@@ -69,15 +69,14 @@ describe('saveEdit() — rename/QBR-count capture happens before setClient(data)
     expect(hadQbrsIdx).toBeGreaterThan(okGuardIdx)
   })
 
-  it('renamed and hadQbrs are both computed BEFORE setClient(data) — proving the QBR count is read pre-save, not from the (qbrs-less) PATCH response', () => {
+  it('renamed and hadQbrs are both computed BEFORE the setClient merge — proving the QBR count is read pre-save, not from the (qbrs-less) PATCH response', () => {
     const saveEditSource = extractSaveEdit()
     const renamedIdx    = saveEditSource.search(/const renamed = client\.name !== data\.name/)
     const hadQbrsIdx     = saveEditSource.search(/const hadQbrs = /)
-    // Anchored to the start of the statement line (not just the substring
-    // "setClient(data)"), since the explanatory comment above it also
-    // mentions "setClient(data)" in prose — a bare substring search would
-    // match that comment text first.
-    const setClientIdx   = saveEditSource.search(/^\s*setClient\(data\)/m)
+    // Anchored to the start of the statement line, matching the functional
+    // merge (setClient(data) alone no longer appears in saveEdit() — see
+    // the QBR-history-after-client-patch fix).
+    const setClientIdx   = saveEditSource.search(/^\s*setClient\(\(prev: any\) => \(\{ \.\.\.prev, \.\.\.data \}\)\)/m)
     expect(renamedIdx).toBeGreaterThan(-1)
     expect(hadQbrsIdx).toBeGreaterThan(-1)
     expect(setClientIdx).toBeGreaterThan(-1)
@@ -243,5 +242,117 @@ describe('notice state machine — behavioral harness', () => {
     // sanity check of the comparison's own semantics, not a new rule.
     const next = mirrorNoticeReducer(false, { type: 'save', oldName: 'Acme Corp', newName: 'Acme Corp', preSaveQbrCount: 1 })
     expect(next).toBe(false)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// F. QBR-history-after-client-patch fix — both PATCH-success paths merge
+// the scalar-only PATCH response over previous state instead of replacing
+// it, so relations the PATCH response never carries (qbrs) survive.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('page.tsx — both PATCH-success paths use a functional merge (prev first, data second)', () => {
+  const MERGE_PATTERN = /setClient\(\(prev: any\) => \(\{ \.\.\.prev, \.\.\.data \}\)\)/
+
+  it('saveEdit() merges with prev spread before data, never the reverse order', () => {
+    const saveEditSource = extractSaveEdit()
+    expect(saveEditSource).toMatch(MERGE_PATTERN)
+    expect(saveEditSource).not.toMatch(/setClient\(\(prev: any\) => \(\{ \.\.\.data, \.\.\.prev \}\)\)/)
+  })
+
+  it('the QBR Schedule "Save date" quick-editor also merges with prev spread before data', () => {
+    const anchor = 'nextQbrDate: form.nextQbrDate ? new Date(form.nextQbrDate).toISOString() : null'
+    const anchorIdx = pageSource.indexOf(anchor)
+    expect(anchorIdx).toBeGreaterThan(-1)
+    const startIdx = pageSource.lastIndexOf('onClick={async () => {', anchorIdx)
+    const endIdx   = pageSource.indexOf('disabled={saving}', anchorIdx)
+    const quickEditorHandler = pageSource.slice(startIdx, endIdx)
+    expect(quickEditorHandler).toMatch(MERGE_PATTERN)
+    expect(quickEditorHandler).not.toMatch(/setClient\(\(prev: any\) => \(\{ \.\.\.data, \.\.\.prev \}\)\)/)
+  })
+
+  it('the initial GET effect does NOT use the merge form — a full replacement is correct there, since the GET response already carries the complete Client detail shape including qbrs', () => {
+    const effectBody = pageSource.slice(
+      pageSource.indexOf('useEffect(() => {'),
+      pageSource.indexOf('}, [params.id])')
+    )
+    expect(effectBody).not.toMatch(MERGE_PATTERN)
+    expect(effectBody).toMatch(/setClient\(data\)/)
+  })
+
+  it('the PATCH API route itself is untouched — no include: { qbrs } was added to prisma.client.update()', () => {
+    const routeSource = readFileSync(
+      join(process.cwd(), 'app/api/clients/[id]/route.ts'), 'utf-8'
+    ).replace(/\r\n/g, '\n')
+    const patchBody = routeSource.slice(
+      routeSource.indexOf('export async function PATCH'),
+      routeSource.indexOf('export async function DELETE')
+    )
+    expect(patchBody).not.toMatch(/include:\s*\{\s*qbrs/)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────
+// G. QBR-preservation behavioral harness — the actual merge expression,
+// exercised as a pure function, proving both halves of the invariant at
+// once: relations absent from the PATCH response survive, while every
+// field the PATCH response DOES return stays fresh.
+// ─────────────────────────────────────────────────────────────────────────
+
+function mergeClientState(prev: any, data: any) {
+  return { ...prev, ...data }
+}
+
+describe('client-state merge — qbrs survives, fresh PATCH fields win', () => {
+  it('preserves prev.qbrs (absent from the PATCH response) while adopting fresh reminderStatus and industry from data', () => {
+    const existingQbr = { id: 'qbr-1', quarter: '2', year: 2026, status: 'GENERATED' }
+    const prev = {
+      id: 'client-1',
+      qbrs: [existingQbr],
+      reminderStatus: 'OLD',
+      industry: 'Old Industry',
+      name: 'Acme',
+    }
+    const data = {
+      id: 'client-1',
+      reminderStatus: 'NEW',
+      industry: 'Updated',
+      name: 'Acme',
+    }
+
+    const result = mergeClientState(prev, data)
+
+    // 1. Relations absent from PATCH survive.
+    expect(result.qbrs).toBe(prev.qbrs)
+    expect(result.qbrs).toEqual([existingQbr])
+
+    // 2. Fields PATCH does return stay fresh, never the stale prev value.
+    expect(result.reminderStatus).toBe('NEW')
+    expect(result.industry).toBe('Updated')
+  })
+
+  it('Client.id is preserved and unchanged across the merge', () => {
+    const prev = { id: 'client-1', qbrs: [{ id: 'qbr-1' }] }
+    const data = { id: 'client-1', name: 'Renamed' }
+    const result = mergeClientState(prev, data)
+    expect(result.id).toBe('client-1')
+  })
+
+  it('a Client with zero prior QBRs still merges correctly — qbrs remains an empty array, not fabricated or dropped to undefined', () => {
+    const prev = { id: 'client-1', qbrs: [] }
+    const data = { id: 'client-1', name: 'Renamed' }
+    const result = mergeClientState(prev, data)
+    expect(result.qbrs).toEqual([])
+  })
+
+  it('the reverse spread order ({...data, ...prev}) would incorrectly resurrect stale fields — demonstrating why prev-first/data-second order is required', () => {
+    const prev = { id: 'client-1', qbrs: [{ id: 'qbr-1' }], reminderStatus: 'OLD' }
+    const data = { id: 'client-1', reminderStatus: 'NEW' }
+    const wrongOrderResult = { ...data, ...prev }
+    // The wrong order lets the stale prev.reminderStatus win — exactly the
+    // regression the required ...prev, ...data order prevents.
+    expect(wrongOrderResult.reminderStatus).toBe('OLD')
+    const correctResult = { ...prev, ...data }
+    expect(correctResult.reminderStatus).toBe('NEW')
   })
 })
