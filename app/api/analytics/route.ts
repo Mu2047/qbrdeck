@@ -93,6 +93,7 @@ export async function GET(req: NextRequest) {
     const qbrWhere: any = {
       client:    { workspaceId },
       createdAt: { gte: rangeStart },
+      deletedAt: null,
     }
     if (isFullAnalytics && clientId !== 'all') qbrWhere.clientId = clientId
 
@@ -138,7 +139,7 @@ export async function GET(req: NextRequest) {
       select: {
         id: true, name: true,
         qbrs: {
-          where:  { createdAt: { gte: ninetyDaysAgo } },
+          where:  { deletedAt: null, createdAt: { gte: ninetyDaysAgo } },
           select: { id: true },
           take:   1,
         },
@@ -271,7 +272,7 @@ export async function GET(req: NextRequest) {
     }
 
     // ── Summary ───────────────────────────────────────────────────────────────
-    const totalQBRs = await prisma.qBR.count({ where: { client: { workspaceId } } })
+    const totalQBRs = await prisma.qBR.count({ where: { client: { workspaceId }, deletedAt: null } })
 
     return NextResponse.json({
       analyticsAccess: limits.analytics,
