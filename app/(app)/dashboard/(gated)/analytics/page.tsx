@@ -234,7 +234,14 @@ export default function AnalyticsPage() {
   } = data
 
   const isFullAnalytics = analyticsAccess === 'full'
-  const isEmpty = summary.totalQBRs === 0 && qbrActivity.length === 0
+  // Two distinct zero-QBR states, not one generic empty state: a workspace
+  // with zero Clients cannot generate a QBR yet (the right next action is
+  // adding a Client), while a workspace with Clients but zero QBRs already
+  // has somewhere to generate one from (the right next action is picking a
+  // Client). Checked in this order — hasNoClients implies hasNoQbrs is also
+  // true, so it must be evaluated first.
+  const hasNoClients = summary.totalClients === 0
+  const hasNoQbrs     = summary.totalQBRs === 0
 
   // Export KPI label and helper text — different for basic vs full
   const exportKpiLabel = summary.exportIsBillingPeriod
@@ -291,12 +298,24 @@ export default function AnalyticsPage() {
         </div>
       )}
 
-      {/* ── Empty state ────────────────────────────────────────────────────────── */}
-      {isEmpty ? (
+      {/* ── Empty states ───────────────────────────────────────────────────────── */}
+      {hasNoClients ? (
         <div className="card p-16 text-center">
           <BarChart2 size={40} className="mx-auto text-gray-200 mb-4" />
-          <p className="text-gray-500 font-medium mb-1">No analytics yet</p>
-          <p className="text-gray-400 text-sm">Generate your first QBR to see trends, coverage, exports, and risk insights.</p>
+          <p className="text-gray-500 font-medium mb-1">No clients yet</p>
+          <p className="text-gray-400 text-sm mb-4">Add your first client to start generating QBRs and analytics.</p>
+          <Link href="/dashboard/clients/new" className="btn-primary text-sm">
+            Add your first client
+          </Link>
+        </div>
+      ) : hasNoQbrs ? (
+        <div className="card p-16 text-center">
+          <BarChart2 size={40} className="mx-auto text-gray-200 mb-4" />
+          <p className="text-gray-500 font-medium mb-1">No QBRs yet</p>
+          <p className="text-gray-400 text-sm mb-4">Generate a QBR for one of your clients to start seeing analytics.</p>
+          <Link href="/dashboard/clients" className="btn-primary text-sm">
+            View clients
+          </Link>
         </div>
       ) : (
         <>
