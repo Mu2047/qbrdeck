@@ -81,14 +81,19 @@ describe('Coverage query — nested qbrs relation on coverageClients', () => {
     expect(block).toMatch(/createdAt:\s*\{\s*gte:\s*ninetyDaysAgo\s*\}/)
   })
 
-  it('a Client whose only in-window QBR is soft-deleted cannot be counted as covered: the deletedAt condition sits inside the same where as the date condition, not the outer Client where', () => {
+  it('a Client whose only in-window QBR is soft-deleted cannot be counted as covered: the deletedAt condition sits inside the nested qbrs.where, alongside the date condition', () => {
     const block = extractCoverageBlock()
-    // The outer Client-level where must remain workspace-only — deletedAt
-    // must not leak into it (that would be a Client.deletedAt change, out
-    // of scope for this fix).
+    // This PR (#24) is QBR-deletedAt filtering only, proven above. The
+    // outer Client-level where independently gained its own deletedAt:
+    // null in a later, separate fix — see
+    // tests/analytics-deleted-client-filtering.test.ts, which covers
+    // that Client.deletedAt correction in full detail. Both facts are
+    // asserted here so this test reflects the route's actual current
+    // shape rather than only the narrower PR #24 slice of it.
     const outerWhereMatch = block.match(/const coverageClients = await prisma\.client\.findMany\(\{\s*where:\s*\{([^}]*)\}/)
     expect(outerWhereMatch).not.toBeNull()
-    expect(outerWhereMatch![1]).not.toMatch(/deletedAt/)
+    expect(outerWhereMatch![1]).toMatch(/workspaceId/)
+    expect(outerWhereMatch![1]).toMatch(/deletedAt:\s*null/)
   })
 })
 
@@ -117,10 +122,10 @@ describe('totalQBRs count — summary KPI + empty-state upstream source', () => 
   })
 })
 
-describe('All three query contracts are independently required — no single occurrence satisfies more than one', () => {
-  it('exactly three deletedAt: null occurrences exist in the file, one per affected query', () => {
+describe('All three QBR-level query contracts are independently required — no single occurrence satisfies more than one', () => {
+  it('at least three deletedAt: null occurrences exist in the file, one per PR #24 QBR-level query (a later fix adds two more, Client-level, occurrences — see tests/analytics-deleted-client-filtering.test.ts)', () => {
     const occurrences = routeSource.match(/deletedAt:\s*null/g) ?? []
-    expect(occurrences.length).toBe(3)
+    expect(occurrences.length).toBeGreaterThanOrEqual(3)
   })
 })
 
