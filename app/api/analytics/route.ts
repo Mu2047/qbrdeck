@@ -83,7 +83,7 @@ export async function GET(req: NextRequest) {
     // ── Client list — full analytics only ─────────────────────────────────────
     const allClients = isFullAnalytics
       ? await prisma.client.findMany({
-          where:   { workspaceId },
+          where:   { workspaceId, deletedAt: null },
           select:  { id: true, name: true },
           orderBy: { name: 'asc' },
         })
@@ -135,7 +135,7 @@ export async function GET(req: NextRequest) {
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90)
 
     const coverageClients = await prisma.client.findMany({
-      where:  { workspaceId },
+      where:  { workspaceId, deletedAt: null },
       select: {
         id: true, name: true,
         qbrs: {
