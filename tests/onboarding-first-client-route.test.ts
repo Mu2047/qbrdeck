@@ -85,7 +85,7 @@ describe('onboarding client route — replay check happens before limit/candidat
 
   it('tryReplay is defined and returns before the plan-limit check (getLimits/isUnderLimit) and before any $transaction is opened', () => {
     const tryReplayFnIdx = routeSource.indexOf('async function tryReplay(')
-    const getLimitsIdx = routeSource.indexOf('getLimits(plan)')
+    const getLimitsIdx = routeSource.indexOf("getLimits(subscription?.plan ?? 'FREE')")
     const firstTransactionIdx = routeSource.indexOf('prisma.$transaction(')
     expect(tryReplayFnIdx).toBeGreaterThan(-1)
     expect(getLimitsIdx).toBeGreaterThan(-1)
@@ -172,6 +172,12 @@ describe('onboarding client route — attach mode server-resolves candidates fre
     expect(handleAttachBody).not.toMatch(/prisma\.client\.count/)
   })
 
+  it('attach mode never calls lockWorkspaceRow — it does not consume Client capacity, so it does not need the Workspace lock', () => {
+    const handleAttachMatch = routeSource.match(/async function handleAttach\([\s\S]*?\n\}\n/)
+    const handleAttachBody = handleAttachMatch?.[0] ?? ''
+    expect(handleAttachBody).not.toMatch(/lockWorkspaceRow/)
+  })
+
   it('the conditional claim requires the exact fresh-state where-clause and sets the anchor, key, and next step atomically', () => {
     const claimMatch = routeSource.match(/const claim = await tx\.workspaceOnboarding\.updateMany\(\{[\s\S]*?\n {6}\}\)/g)
     expect(claimMatch).not.toBeNull()
@@ -186,40 +192,113 @@ describe('onboarding client route — attach mode server-resolves candidates fre
   })
 })
 
-describe('onboarding client route — create mode: correct limit check, atomic candidate + claim, no manual rollback', () => {
-  it('counts only non-deleted Clients before the transaction, using the real lib/limits.ts source', () => {
-    expect(routeSource).toMatch(/import \{ getLimits, isUnderLimit \} from '@\/lib\/limits'/)
-    expect(routeSource).toMatch(/const clientCount = await prisma\.client\.count\(\{ where: \{ workspaceId, deletedAt: null \} \}\)/)
-    expect(routeSource).toMatch(/if \(!isUnderLimit\(clientCount, limits\.clients\)\) \{\s*return NextResponse\.json\(\{ error: 'CLIENT_LIMIT_REACHED' \}/)
-  })
+describe('onboarding client route — create mode: shared Workspace lock with normal POST /api/clients', () => {
+  const handleCreateMatch = routeSource.match(/async function handleCreate\([\s\S]*?\n\}\n/)
+  const handleCreateBody = handleCreateMatch?.[0] ?? ''
 
-  it('the client-count check runs before prisma.$transaction( is opened in handleCreate', () => {
-    const handleCreateMatch = routeSource.match(/async function handleCreate\([\s\S]*?\n\}\n/)
+  // Isolate just the transaction callback within handleCreate so ordering
+  // assertions below can't be accidentally satisfied by handleAttach's own
+  // (unrelated) transaction elsewhere in the file.
+  const txMatch = handleCreateBody.match(/prisma\.\$transaction\(async \(tx\) => \{[\s\S]*?\n {4}\}\)/)
+  const txBody = txMatch?.[0] ?? ''
+
+  it('handleCreate exists and its transaction body was extracted', () => {
     expect(handleCreateMatch).not.toBeNull()
-    const body = handleCreateMatch?.[0] ?? ''
-    const countIdx = body.indexOf('prisma.client.count(')
-    const txIdx = body.indexOf('prisma.$transaction(')
-    expect(countIdx).toBeGreaterThan(-1)
-    expect(txIdx).toBeGreaterThan(-1)
-    expect(countIdx).toBeLessThan(txIdx)
+    expect(txMatch).not.toBeNull()
   })
 
-  it('candidate Client create and the onboarding claim are both inside the same $transaction callback', () => {
-    const handleCreateMatch = routeSource.match(/async function handleCreate\([\s\S]*?\n\}\n/)
-    const body = handleCreateMatch?.[0] ?? ''
-    const txStart = body.indexOf('prisma.$transaction(async (tx) => {')
-    const createIdx = body.indexOf('tx.client.create(')
-    const claimIdx = body.indexOf('tx.workspaceOnboarding.updateMany(')
-    expect(txStart).toBeGreaterThan(-1)
-    expect(txStart).toBeLessThan(createIdx)
+  it('imports and reuses lockWorkspaceRow from lib/workspace-lock, without modifying the helper file', () => {
+    expect(routeSource).toMatch(/import \{ lockWorkspaceRow \} from '@\/lib\/workspace-lock'/)
+  })
+
+  it('handleCreate calls lockWorkspaceRow(tx, workspaceId) as the first statement inside its transaction', () => {
+    const lockIdx = txBody.indexOf('lockWorkspaceRow(tx, workspaceId)')
+    const subIdx  = txBody.indexOf('tx.subscription.findUnique(')
+    const countIdx = txBody.indexOf('tx.client.count(')
+    const createIdx = txBody.indexOf('tx.client.create(')
+    expect(lockIdx).toBeGreaterThan(-1)
+    expect(lockIdx).toBeLessThan(subIdx)
+    expect(lockIdx).toBeLessThan(countIdx)
+    expect(lockIdx).toBeLessThan(createIdx)
+  })
+
+  it('exact logical order: lock < Subscription read < getLimits < active count < isUnderLimit < create < onboarding claim', () => {
+    const lockIdx    = txBody.indexOf('lockWorkspaceRow(tx, workspaceId)')
+    const subIdx     = txBody.indexOf('tx.subscription.findUnique(')
+    const limitsIdx  = txBody.indexOf("getLimits(subscription?.plan ?? 'FREE')")
+    const countIdx   = txBody.indexOf('tx.client.count(')
+    const underIdx   = txBody.indexOf('isUnderLimit(clientCount, limits.clients)')
+    const createIdx  = txBody.indexOf('tx.client.create(')
+    const claimIdx   = txBody.indexOf('tx.workspaceOnboarding.updateMany(')
+
+    for (const idx of [lockIdx, subIdx, limitsIdx, countIdx, underIdx, createIdx, claimIdx]) {
+      expect(idx).toBeGreaterThan(-1)
+    }
+    expect(lockIdx).toBeLessThan(subIdx)
+    expect(subIdx).toBeLessThan(limitsIdx)
+    expect(limitsIdx).toBeLessThan(countIdx)
+    expect(countIdx).toBeLessThan(underIdx)
+    expect(underIdx).toBeLessThan(createIdx)
     expect(createIdx).toBeLessThan(claimIdx)
   })
 
-  it('a lost claim (count !== 1) throws — never a manual tx.client.delete or prisma.client.delete anywhere in the file', () => {
+  it('the authoritative active Client count uses tx.client.count (not outer prisma.client.count), scoped by workspaceId and deletedAt: null', () => {
+    expect(txBody).toMatch(/tx\.client\.count\(\{\s*where:\s*\{ workspaceId, deletedAt: null \},?\s*\}\)/)
+    expect(handleCreateBody).not.toMatch(/(?<!tx\.)\bprisma\.client\.count\(/)
+  })
+
+  it('uses isUnderLimit(clientCount, limits.clients) with no numeric offset', () => {
+    expect(txBody).toMatch(/isUnderLimit\(clientCount, limits\.clients\)/)
+    expect(txBody).not.toMatch(/clientCount\s*-\s*1/)
+    expect(txBody).not.toMatch(/clientCount\s*\+\s*1/)
+  })
+
+  it('re-reads Subscription.plan fresh under the lock, falls back to FREE, and never upserts/creates a Subscription', () => {
+    expect(txBody).toMatch(/tx\.subscription\.findUnique\(\{\s*where:\s*\{ workspaceId \},/)
+    expect(txBody).toMatch(/getLimits\(subscription\?\.plan \?\? 'FREE'\)/)
+    expect(txBody).not.toMatch(/subscription\.(upsert|create)\(/)
+  })
+
+  it('returns exactly 403 { error: \'CLIENT_LIMIT_REACHED\' } when the locked authoritative check fails, without creating a Client', () => {
+    expect(handleCreateBody).toMatch(/if \(result\.kind === 'limit_reached'\) \{\s*return NextResponse\.json\(\{ error: 'CLIENT_LIMIT_REACHED' \}, \{ status: 403 \}\)/)
+    const limitBranch = txBody.match(/if \(!isUnderLimit\(clientCount, limits\.clients\)\) \{[\s\S]*?\n {6}\}/)?.[0] ?? ''
+    expect(limitBranch).not.toMatch(/tx\.client\.create/)
+  })
+
+  it('tx.client.create occurs before the onboarding claim, which still anchors onboardingClientId to the newly created Client', () => {
+    const createIdx = txBody.indexOf('tx.client.create(')
+    const claimIdx  = txBody.indexOf('tx.workspaceOnboarding.updateMany(')
+    expect(createIdx).toBeGreaterThan(-1)
+    expect(claimIdx).toBeGreaterThan(-1)
+    expect(createIdx).toBeLessThan(claimIdx)
+    expect(txBody).toMatch(/onboardingClientId: created\.id,/)
+  })
+
+  it('a lost claim (count !== 1) still throws ClaimLostError — never a manual tx.client.delete or prisma.client.delete anywhere in the file', () => {
     expect(routeSource).toMatch(/if \(claim\.count !== 1\) throw new ClaimLostError\(\)/)
     expect(routeSource).not.toMatch(/\.client\.delete\(/)
   })
+
+  it('the onboarding claim WHERE/data shape is unchanged: workspaceId, IN_PROGRESS, FIRST_CLIENT, owner identity, null anchor, and advances to FIRST_QBR with the idempotency key', () => {
+    const claimCallMatch = txBody.match(/const claim = await tx\.workspaceOnboarding\.updateMany\(\{[\s\S]*?\n {6}\}\)/)
+    expect(claimCallMatch).not.toBeNull()
+    const call = claimCallMatch?.[0] ?? ''
+    expect(call).toMatch(/workspaceId,/)
+    expect(call).toMatch(/status: 'IN_PROGRESS',/)
+    expect(call).toMatch(/currentStep: 'FIRST_CLIENT',/)
+    expect(call).toMatch(/onboardingOwnerUserId: userId,/)
+    expect(call).toMatch(/onboardingClientId: null,/)
+    expect(call).toMatch(/clientStepIdempotencyKey: retryKey,/)
+    expect(call).toMatch(/currentStep: 'FIRST_QBR',/)
+  })
 })
+
+// These tests establish only the source-level serialization contract shared
+// by this route and app/api/clients/route.ts: both call lockWorkspaceRow on
+// the same Workspace row, before their respective authoritative Client
+// counts, inside a Prisma interactive transaction. They do NOT execute two
+// simultaneous requests against a real PostgreSQL database.
+// REAL POSTGRES CROSS-PATH CONCURRENCY EXECUTION: NO.
 
 describe('onboarding client route — post-rollback classification is exact-match only, never a range/inequality', () => {
   it('classifyClientConflict re-reads the onboarding row scoped by workspaceId', () => {

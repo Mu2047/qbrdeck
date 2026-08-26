@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceMembership } from '@/lib/workspace'
+import { lockWorkspaceRow } from '@/lib/workspace-lock'
 import { getLimits, isUnderLimit } from '@/lib/limits'
 
 // Field shape intentionally mirrors app/api/clients/route.ts's createSchema
@@ -101,7 +102,7 @@ export async function POST(req: NextRequest) {
     if (parsed.data.mode === 'attach') {
       return await handleAttach(workspaceId, userId, retryKey, parsed.data.clientId)
     }
-    return await handleCreate(workspaceId, userId, retryKey, parsed.data, membership.subscription?.plan ?? 'FREE')
+    return await handleCreate(workspaceId, userId, retryKey, parsed.data)
   } catch (err: any) {
     console.error('[onboarding-client]', err)
     return NextResponse.json({ error: err.message ?? 'Internal error' }, { status: 500 })
@@ -201,19 +202,36 @@ async function handleCreate(
   userId: string,
   retryKey: string,
   fields: { name: string; industry?: string; contactName?: string; contactEmail?: string; userCount?: number; notes?: string },
-  plan: string,
 ) {
-  // ── Correct plan limit check — deletedAt: null filtered, no offset —
-  // performed BEFORE the transaction, but only ever reached after the
-  // replay check above has already ruled out a lost-response retry.
-  const limits = getLimits(plan)
-  const clientCount = await prisma.client.count({ where: { workspaceId, deletedAt: null } })
-  if (!isUnderLimit(clientCount, limits.clients)) {
-    return NextResponse.json({ error: 'CLIENT_LIMIT_REACHED' }, { status: 403 })
-  }
-
   try {
-    const client = await prisma.$transaction(async (tx) => {
+    // ── Concurrency-safe capacity check + create ────────────────────────────
+    // Locks the same Workspace row as the normal POST /api/clients path (see
+    // lib/workspace-lock.ts) so the two Client-creation paths serialize their
+    // capacity decisions against each other, not just against themselves.
+    // The count/limit check is now the sole authoritative decision for
+    // create mode, performed under the lock — there is no separate
+    // pre-transaction check to keep in sync with it.
+    const result = await prisma.$transaction(async (tx) => {
+      await lockWorkspaceRow(tx, workspaceId)
+
+      // Re-read the plan fresh under the lock, same as the normal route —
+      // a workspace may not yet have a Subscription row at all, hence the
+      // FREE fallback below.
+      const subscription = await tx.subscription.findUnique({
+        where:  { workspaceId },
+        select: { plan: true },
+      })
+      const limits = getLimits(subscription?.plan ?? 'FREE')
+
+      // Soft-deleted Clients do not consume active Client capacity.
+      const clientCount = await tx.client.count({
+        where: { workspaceId, deletedAt: null },
+      })
+
+      if (!isUnderLimit(clientCount, limits.clients)) {
+        return { kind: 'limit_reached' } as const
+      }
+
       const created = await tx.client.create({
         data: {
           name: fields.name,
@@ -245,10 +263,14 @@ async function handleCreate(
       // candidate Client just created above. No manual delete anywhere.
       if (claim.count !== 1) throw new ClaimLostError()
 
-      return created
+      return { kind: 'created', client: created } as const
     })
 
-    return NextResponse.json({ id: client.id, name: client.name }, { status: 201 })
+    if (result.kind === 'limit_reached') {
+      return NextResponse.json({ error: 'CLIENT_LIMIT_REACHED' }, { status: 403 })
+    }
+
+    return NextResponse.json({ id: result.client.id, name: result.client.name }, { status: 201 })
   } catch (err) {
     if (err instanceof ClaimLostError) {
       return await classifyClientConflict(workspaceId, userId, retryKey)
