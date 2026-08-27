@@ -57,14 +57,6 @@ export async function POST(req: NextRequest) {
       sub.qbrCount = 0
     }
  
-    const clientCount = await prisma.client.count({ where: { workspaceId: membership.workspaceId } })
-    if (!isUnderLimit(clientCount - 1, limits.clients)) {
-      return NextResponse.json(
-        { error: 'LIMIT_REACHED', limit: 'clients', plan, max: limits.clients },
-        { status: 403 }
-      )
-    }
- 
     const qbrCount = sub?.qbrCount ?? 0
     if (!isUnderLimit(qbrCount, limits.qbrsPerMonth)) {
       return NextResponse.json(

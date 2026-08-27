@@ -129,8 +129,10 @@ describe('onboarding qbr route — legitimate QBR quota only, never the suspicio
     expect(routeSource).not.toMatch(/limits\.clients/)
   })
 
-  it('the suspicious check does exist in generate-qbr (sanity check that we know what we are avoiding)', () => {
-    expect(generateQbrSource).toMatch(/clientCount - 1, limits\.clients/)
+  it('generate-qbr no longer contains the removed Client-capacity check (PR2: Client capacity is enforced only at Client-creation time, never on an already-existing Client)', () => {
+    expect(generateQbrSource).not.toMatch(/clientCount - 1, limits\.clients/)
+    expect(generateQbrSource).not.toMatch(/limits\.clients/)
+    expect(generateQbrSource).not.toMatch(/prisma\.client\.count\(/)
   })
 })
 
