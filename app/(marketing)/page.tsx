@@ -16,24 +16,24 @@ const PLANS = [
     name: 'Solo',
     price: 49,
     desc: 'Perfect for solo MSPs getting started',
-    features: ['Up to 10 clients', 'Unlimited QBRs', 'PDF + PPTX export', 'Email support'],
-    cta: 'Start free trial',
+    features: ['Up to 10 clients', '20 QBRs per month', 'PDF + PPTX export', 'Email support'],
+    cta: 'Get started',
     popular: false,
   },
   {
     name: 'Growth',
     price: 99,
     desc: 'For growing MSPs with multiple clients',
-    features: ['Up to 50 clients', 'Unlimited QBRs', 'PDF + PPTX export', 'Custom branding', 'Priority support'],
-    cta: 'Start free trial',
+    features: ['Up to 50 clients', 'Unlimited QBRs', 'PDF + PPTX export', 'White-label branding', 'Priority support'],
+    cta: 'Get started',
     popular: true,
   },
   {
     name: 'Agency',
     price: 199,
     desc: 'For established MSPs at scale',
-    features: ['Unlimited clients', 'Unlimited QBRs', 'PDF + PPTX export', 'White-label branding', 'Custom AI tone', 'Priority support'],
-    cta: 'Contact us',
+    features: ['Unlimited clients', 'Unlimited QBRs', 'PDF + PPTX export', 'White-label branding', 'Priority support'],
+    cta: 'Get started',
     popular: false,
   },
 ]
@@ -101,7 +101,7 @@ export default function LandingPage() {
               See how it works <ArrowRight size={14} />
             </Link>
           </div>
-          <p className="text-gray-500 text-sm mt-6">14-day free trial · Cancel anytime · No setup fees</p>
+          <p className="text-gray-500 text-sm mt-6">Cancel anytime · No setup fees</p>
         </div>
       </section>
 

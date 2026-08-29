@@ -231,8 +231,5 @@ function buildFeatureList(plan: keyof typeof PLAN_LIMITS): string[] {
   // Priority support
   if (plan === 'GROWTH' || plan === 'AGENCY') features.push('Priority support')
 
-  // Agency extras
-  if (plan === 'AGENCY') features.push('Custom AI tone')
-
   return features
 }
