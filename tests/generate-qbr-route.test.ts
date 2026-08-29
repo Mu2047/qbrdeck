@@ -96,3 +96,40 @@ describe('generate-qbr route — authorization and QBR creation unchanged', () =
     expect(routeSource).not.toMatch(/prisma\.client\.create/)
   })
 })
+
+describe('generate-qbr route — error hygiene: malformed JSON never reaches the generic 500', () => {
+  it('req.json() is wrapped in try/catch, returning 400 Invalid request body on parse failure', () => {
+    expect(routeSource).toMatch(/let body: unknown\s*try \{\s*body = await req\.json\(\)\s*\} catch \{\s*return NextResponse\.json\(\{ error: 'Invalid request body' \}, \{ status: 400 \}\)\s*\}/)
+  })
+})
+
+describe('generate-qbr route — error hygiene: schema validation never reaches the generic 500', () => {
+  it('uses schema.safeParse(body), never the throwing schema.parse(body)', () => {
+    expect(routeSource).toMatch(/const parsed = schema\.safeParse\(body\)/)
+    expect(routeSource).not.toMatch(/schema\.parse\(body\)/)
+  })
+
+  it('a failed parse returns 400 Invalid request body, and data is read from parsed.data', () => {
+    expect(routeSource).toMatch(/if \(!parsed\.success\) \{\s*return NextResponse\.json\(\{ error: 'Invalid request body' \}, \{ status: 400 \}\)\s*\}/)
+    expect(routeSource).toMatch(/const data = parsed\.data/)
+  })
+})
+
+describe('generate-qbr route — error hygiene: unexpected failures return a stable sanitized 500', () => {
+  const catchMatch = routeSource.match(/\} catch \(err: any\) \{[\s\S]*?\n  \}\n\}/)
+  const catchBody = catchMatch?.[0] ?? ''
+
+  it('locates the outer catch block', () => {
+    expect(catchMatch).not.toBeNull()
+  })
+
+  it('still logs server-side via console.error(\'[generate-qbr]\', err)', () => {
+    expect(catchBody).toMatch(/console\.error\('\[generate-qbr\]', err\)/)
+  })
+
+  it('returns exactly { error: \'Failed to generate QBR\' } at 500, never derived from err.message/err.error', () => {
+    expect(catchBody).toMatch(/return NextResponse\.json\(\{ error: 'Failed to generate QBR' \}, \{ status: 500 \}\)/)
+    expect(catchBody).not.toMatch(/err\.message/)
+    expect(catchBody).not.toMatch(/err\.error/)
+  })
+})
