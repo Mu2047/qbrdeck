@@ -35,9 +35,19 @@ export async function POST(req: NextRequest) {
     if (!can.generateQBR(membership.role))
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
  
-    const body = await req.json()
-    const data = schema.parse(body)
- 
+    let body: unknown
+    try {
+      body = await req.json()
+    } catch {
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    }
+
+    const parsed = schema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    }
+    const data = parsed.data
+
     const client = await prisma.client.findFirst({
   where: { id: data.clientId, workspaceId: membership.workspaceId, deletedAt: null },
 })
@@ -245,12 +255,7 @@ export async function POST(req: NextRequest) {
  
   } catch (err: any) {
     console.error('[generate-qbr]', err)
-    const message = typeof err.message === 'string'
-      ? err.message
-      : typeof err.error === 'string'
-        ? err.error
-        : 'Internal error'
-    return NextResponse.json({ error: message }, { status: 500 })
+    return NextResponse.json({ error: 'Failed to generate QBR' }, { status: 500 })
   }
 }
  
