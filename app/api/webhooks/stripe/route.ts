@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { stripe } from '@/lib/stripe'
 import { prisma } from '@/lib/prisma'
 import { PAYMENT_GRACE_PERIOD_DAYS } from '@/lib/subscription-access'
+import { getSubscriptionPeriod } from '@/lib/stripe-subscription-period'
 import type Stripe from 'stripe'
 
 function getPlanFromPriceId(priceId?: string): 'FREE' | 'SOLO' | 'GROWTH' | 'AGENCY' {
@@ -110,6 +111,7 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session): Promis
   const sub     = await stripe.subscriptions.retrieve(subscriptionId)
   const priceId = sub.items.data[0]?.price.id
   const plan    = getPlanFromPriceId(priceId)
+  const period  = getSubscriptionPeriod(sub, priceId)
 
   const subscriptionData = {
     stripeCustomerId:         customerId,
@@ -118,10 +120,10 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session): Promis
     plan,
     status:                   sub.status,
     stripeStatus:             sub.status,
-    stripeCurrentPeriodStart: new Date(sub.current_period_start * 1000),
-    stripeCurrentPeriodEnd:   new Date(sub.current_period_end   * 1000),
-    currentPeriodEnd:         new Date(sub.current_period_end   * 1000),
-    periodStart:              new Date(sub.current_period_start * 1000),
+    stripeCurrentPeriodStart: period.start,
+    stripeCurrentPeriodEnd:   period.end,
+    currentPeriodEnd:         period.end,
+    periodStart:              period.start,
     cancelAtPeriodEnd:        sub.cancel_at_period_end,
     qbrCount:    0,
     exportCount: 0,
@@ -147,6 +149,7 @@ async function handleSubscriptionUpdated(sub: Stripe.Subscription): Promise<void
   const priceId     = sub.items.data[0]?.price.id
   const plan        = getPlanFromPriceId(priceId)
   const isRecovered = sub.status === 'active' || sub.status === 'trialing'
+  const period      = getSubscriptionPeriod(sub, priceId)
 
   const workspaceId = await resolveWorkspaceId(customerId)
   if (!workspaceId) {
@@ -162,9 +165,9 @@ async function handleSubscriptionUpdated(sub: Stripe.Subscription): Promise<void
       stripePriceId:            priceId,
       stripeSubscriptionId:     sub.id,
       stripeCustomerId:         customerId,
-      stripeCurrentPeriodStart: new Date(sub.current_period_start * 1000),
-      stripeCurrentPeriodEnd:   new Date(sub.current_period_end   * 1000),
-      currentPeriodEnd:         new Date(sub.current_period_end   * 1000),
+      stripeCurrentPeriodStart: period.start,
+      stripeCurrentPeriodEnd:   period.end,
+      currentPeriodEnd:         period.end,
       cancelAtPeriodEnd:        sub.cancel_at_period_end,
       ...(isRecovered ? { pastDueAt: null, graceEndsAt: null } : {}),
     },
@@ -200,7 +203,8 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
 
   if (!subscriptionId) return
 
-  const sub = await stripe.subscriptions.retrieve(subscriptionId)
+  const sub    = await stripe.subscriptions.retrieve(subscriptionId)
+  const period = getSubscriptionPeriod(sub, sub.items.data[0]?.price.id)
 
   const workspaceId = await resolveWorkspaceId(customerId)
   if (!workspaceId) {
@@ -212,7 +216,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     select: { periodStart: true, stripeCurrentPeriodStart: true },
   })
 
-  const newPeriodStart = new Date(sub.current_period_start * 1000)
+  const newPeriodStart = period.start
   const oldPeriodStart = existing?.stripeCurrentPeriodStart ?? existing?.periodStart
   const periodChanged  = !oldPeriodStart || newPeriodStart.getTime() !== oldPeriodStart.getTime()
 
@@ -223,8 +227,8 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
       status:                   sub.status,
       stripeStatus:             sub.status,
       stripeCurrentPeriodStart: newPeriodStart,
-      stripeCurrentPeriodEnd:   new Date(sub.current_period_end * 1000),
-      currentPeriodEnd:         new Date(sub.current_period_end * 1000),
+      stripeCurrentPeriodEnd:   period.end,
+      currentPeriodEnd:         period.end,
       cancelAtPeriodEnd:        sub.cancel_at_period_end,
       pastDueAt:   null,
       graceEndsAt: null,
