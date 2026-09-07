@@ -144,6 +144,13 @@ export default async function BillingPage() {
           <BillingButton planKey="MANAGE" isCurrent={false} priceId={null} />
         </div>
       )}
+
+      <p className="text-gray-400 text-xs mt-4">
+        Cancel anytime. Cancellation takes effect at the end of your current billing period.
+        Payments are generally non-refundable and no prorated credits are provided, except
+        where required by law. See our{' '}
+        <a href="/terms" className="underline hover:text-gray-600">Terms of Service</a>.
+      </p>
     </div>
   )
 }
