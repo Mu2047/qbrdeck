@@ -33,6 +33,9 @@ export const can = {
   exportQBR:         (role: TeamRole) => hasRole(role, 'MEMBER'),
   viewQBR:           (role: TeamRole) => hasRole(role, 'VIEWER'),
   editQBRReminders:  (role: TeamRole) => hasRole(role, 'ADMIN'),
+  // Same MEMBER+ bar as generateQBR/exportQBR — deletion is at least as
+  // strict as editing, exporting, or sharing a QBR.
+  deleteQBR:         (role: TeamRole) => hasRole(role, 'MEMBER'),
 }
 export function canGrantRole(inviterRole: TeamRole, targetRole: TeamRole): boolean {
   if (targetRole === 'OWNER') return inviterRole === 'OWNER'

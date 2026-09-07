@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, Download, FileText, Check, Loader2, Share2, Copy, Mail } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { ArrowLeft, Download, FileText, Check, Loader2, Share2, Copy, Mail, Trash2 } from 'lucide-react'
 import { healthCardLabel, isHealthScoreMetric, statusToColor, type HealthStatus } from '@/lib/health-score'
 import { requestJson, type ApiResult } from '@/lib/api-client'
 import { SerializedLatestQueue } from '@/lib/serialized-latest-queue'
@@ -28,6 +29,8 @@ function resolveSendResult(result: ApiResult<{ success: boolean }>): {
 }
 
 const SAVE_FAILURE_MESSAGE = 'Your latest changes were not saved. Please retry.'
+
+const DELETE_QBR_FAILURE_MESSAGE = 'This QBR could not be deleted. Please try again.'
 
 const SHARE_API_FAILURE_MESSAGE = 'Unable to create the share link. Please try again.'
 const SHARE_CLIPBOARD_FAILURE_MESSAGE =
@@ -56,6 +59,7 @@ const HEALTH_STATUS_CLASSES: Record<ReturnType<typeof statusToColor>, { card: st
 }
 
 export default function QBRPage({ params }: { params: { id: string; qbrId: string } }) {
+  const router = useRouter()
   const [qbr, setQbr]                   = useState<any>(null)
   // ── Raw vs. resolved slide state ─────────────────────────────────────────
   // rawSlides: the raw, placeholder-bearing slides exactly as stored in the
@@ -100,6 +104,16 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
   const [sendError, setSendError] = useState<string | null>(null)
   const [sendEmail, setSendEmail] = useState('')
   const [showEmailInput, setShowEmailInput] = useState(false)
+  // Delete requires an explicit second interaction: clicking the low-emphasis
+  // "Delete QBR" control only reveals the confirmation panel — it never
+  // deletes on the first click. A ref (not just state) guards the in-flight
+  // request so a double-click on "Delete QBR" inside the confirmation panel
+  // can't fire two overlapping DELETE requests, same reasoning as
+  // shareCopyInFlight/retrySaveInFlight above.
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [deleting, setDeleting]                 = useState(false)
+  const [deleteError, setDeleteError]           = useState<string | null>(null)
+  const deleteInFlight = useRef(false)
   useEffect(() => {
     fetch(`/api/qbrs/${params.qbrId}`)
       .then(r => r.json())
@@ -453,6 +467,32 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
   async function retryCopyShareUrl() {
     if (!shareUrl || sharing || shareCopyInFlight.current) return
     await copyShareUrl(shareUrl)
+  }
+
+  // Deletes this QBR after explicit confirmation (the confirmation panel
+  // itself is the "do you really want to" step — this function only ever
+  // runs once the user has clicked "Delete QBR" inside that panel). This
+  // does not restore Subscription.qbrCount/exportCount — deletion never
+  // refunds generation/export usage, by product policy.
+  async function deleteQbr() {
+    if (deleteInFlight.current) return
+    deleteInFlight.current = true
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      const result = await requestJson<{ success: boolean }>(`/api/qbrs/${params.qbrId}`, {
+        method: 'DELETE',
+      })
+      if (result.ok && result.data?.success === true) {
+        router.push(`/dashboard/clients/${params.id}`)
+        return
+      }
+      setDeleteError(result.ok ? DELETE_QBR_FAILURE_MESSAGE : result.error)
+      setConfirmingDelete(false)
+    } finally {
+      deleteInFlight.current = false
+      setDeleting(false)
+    }
   }
 
   if (!qbr) return <div className="p-8 text-gray-400 text-sm">Loading...</div>
@@ -829,6 +869,50 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
           </div>
         </div>
       ))}
+
+      {/* ── Danger zone ── low-emphasis by design: a plain text control, set
+          apart from the main action bar, so it is never visually confused
+          with Export/Share/Send. Clicking it only reveals the confirmation
+          panel below — it never deletes on first click. ── */}
+      <div className="mt-8 pt-4 border-t border-gray-100">
+        {!confirmingDelete ? (
+          <button
+            onClick={() => { setDeleteError(null); setConfirmingDelete(true) }}
+            className="text-xs text-gray-400 hover:text-red-600 flex items-center gap-1.5"
+          >
+            <Trash2 size={12} /> Delete this QBR
+          </button>
+        ) : (
+          <div className="card p-4 border-red-200 bg-red-50/40">
+            <p className="text-sm font-medium text-navy-800 mb-1">Delete this QBR?</p>
+            <p className="text-xs text-gray-600 mb-4">
+              It will be removed from your QBR history and any public share links will stop
+              working. This action does not restore your monthly QBR generation usage.
+            </p>
+            {deleteError && (
+              <p role="alert" className="text-xs text-red-600 mb-3">{deleteError}</p>
+            )}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => { setConfirmingDelete(false); setDeleteError(null) }}
+                disabled={deleting}
+                className="btn-secondary text-sm py-1.5 px-3"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={deleteQbr}
+                disabled={deleting}
+                aria-busy={deleting}
+                className="text-sm py-1.5 px-3 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-60 flex items-center gap-1.5"
+              >
+                {deleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                {deleting ? 'Deleting...' : 'Delete QBR'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

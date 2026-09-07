@@ -11,7 +11,7 @@ import { getWorkspaceContext } from '@/lib/workspace'
 async function getReminders(workspaceId: string) {
   const clients = await prisma.client.findMany({
     where: { workspaceId },
-    include: { qbrs: { orderBy: { createdAt: 'desc' }, take: 1 } },
+    include: { qbrs: { where: { deletedAt: null }, orderBy: { createdAt: 'desc' }, take: 1 } },
   })
 
   const overdue:      any[] = []
@@ -52,11 +52,11 @@ export default async function DashboardPage() {
   const [clients, totalQBRsResult, clientCount] = await Promise.all([
     prisma.client.findMany({
       where: { workspaceId },
-      include: { qbrs: { orderBy: { createdAt: 'desc' }, take: 1 } },
+      include: { qbrs: { where: { deletedAt: null }, orderBy: { createdAt: 'desc' }, take: 1 } },
       orderBy: { updatedAt: 'desc' },
       take: 5,
     }),
-    prisma.qBR.count({ where: { client: { workspaceId } } }),
+    prisma.qBR.count({ where: { client: { workspaceId }, deletedAt: null } }),
     prisma.client.count({ where: { workspaceId } }),
   ])
 
