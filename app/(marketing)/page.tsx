@@ -171,6 +171,11 @@ export default function LandingPage() {
           <div className="text-center mb-14">
             <h2 className="text-3xl font-bold text-navy-800 mb-4">Simple, transparent pricing</h2>
             <p className="text-gray-500">Start free. Upgrade when you're ready. Cancel anytime.</p>
+            <p className="text-gray-400 text-xs mt-3">
+              Cancellation takes effect at the end of your current billing period. Payments are
+              generally non-refundable and no prorated credits are provided, except where required
+              by law. See our <Link href="/terms" className="underline hover:text-gray-600">Terms</Link>.
+            </p>
           </div>
           <div className="grid md:grid-cols-3 gap-6">
             {PLANS.map((plan) => (
@@ -223,9 +228,9 @@ export default function LandingPage() {
             © {new Date().getFullYear()} MI Secure Tech Solutions. All rights reserved.
           </div>
           <div className="flex items-center gap-6 text-sm text-gray-400">
-            <Link href="#" className="hover:text-gray-700">Privacy</Link>
-            <Link href="#" className="hover:text-gray-700">Terms</Link>
-            <a href="mailto:mcamara@misecuretechsolutions.com" className="hover:text-gray-700">Support</a>
+            <Link href="/privacy" className="hover:text-gray-700">Privacy</Link>
+            <Link href="/terms" className="hover:text-gray-700">Terms</Link>
+            <a href="mailto:support@misecuretechsolutions.com" className="hover:text-gray-700">Support</a>
           </div>
         </div>
       </footer>
