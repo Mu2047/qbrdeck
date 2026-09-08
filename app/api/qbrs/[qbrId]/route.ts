@@ -140,3 +140,42 @@ export async function PATCH(req: NextRequest, { params }: { params: { qbrId: str
     return NextResponse.json({ error: 'Failed to save QBR' }, { status: 500 })
   }
 }
+
+// Soft-delete this QBR: sets deletedAt so it drops out of every
+// customer-facing view (history, analytics, direct detail, edit, export,
+// share, email — all of which already gate on deletedAt: null) without
+// refunding Subscription.qbrCount/exportCount/exportedQbrIds and without
+// touching ShareLink rows — resolveSharedQbr() (lib/share-links.ts) already
+// rejects any link whose qbr.deletedAt is set, so both manual and
+// email-created links fail safely the moment this commits.
+export async function DELETE(req: NextRequest, { params }: { params: { qbrId: string } }) {
+  try {
+    const { userId: clerkId } = auth()
+    if (!clerkId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    const membership = await getWorkspaceMembership(clerkId)
+    if (!membership) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
+
+    if (!can.deleteQBR(membership.role))
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+    const qbr = await prisma.qBR.findFirst({
+      where: { id: params.qbrId, workspaceId: membership.workspaceId, deletedAt: null },
+    })
+
+    // Missing, cross-workspace, or already-deleted — same 404 either way, so
+    // a double-click/retry after a successful delete is idempotent-safe
+    // rather than corrupting state on the second attempt.
+    if (!qbr) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+    await prisma.qBR.update({
+      where: { id: params.qbrId },
+      data:  { deletedAt: new Date() },
+    })
+
+    return NextResponse.json({ success: true })
+  } catch (err: any) {
+    console.error('[saved-qbr-delete]', params.qbrId, err)
+    return NextResponse.json({ error: 'Failed to delete QBR' }, { status: 500 })
+  }
+}

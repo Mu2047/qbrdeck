@@ -16,8 +16,8 @@ export default async function ClientsPage() {
   const clients = await prisma.client.findMany({
     where: { workspaceId: ctx.workspaceId },
     include: {
-      qbrs: { orderBy: { createdAt: 'desc' }, take: 1 },
-      _count: { select: { qbrs: true } },
+      qbrs: { where: { deletedAt: null }, orderBy: { createdAt: 'desc' }, take: 1 },
+      _count: { select: { qbrs: { where: { deletedAt: null } } } },
     },
     orderBy: { name: 'asc' },
   })
