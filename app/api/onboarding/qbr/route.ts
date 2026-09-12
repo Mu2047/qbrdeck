@@ -5,6 +5,12 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceMembership } from '@/lib/workspace'
 
+// Applies to the three free-text fields interpolated into the Anthropic
+// prompt. Generous for real QBR business content, but bounds the request so
+// an arbitrarily large document cannot be pasted in to inflate AI input-token
+// cost before any generation call is made. Mirrors app/api/generate-qbr/route.ts.
+const MAX_FREE_TEXT_LENGTH = 2000
+
 // No clientId field — the target Client is resolved exclusively from
 // WorkspaceOnboarding.onboardingClientId, never from the browser. See P2
 // onboarding preflight, "QBR request authority".
@@ -18,9 +24,9 @@ const qbrSchema = z.object({
   patchCompliancePct:  z.number().optional(),
   securityIncidents:   z.number().optional(),
   usersSupported:      z.number().optional(),
-  ticketCategories:    z.string().optional(),
-  wins:                z.string().optional(),
-  upsellOpportunities: z.string().optional(),
+  ticketCategories:    z.string().max(MAX_FREE_TEXT_LENGTH).optional(),
+  wins:                z.string().max(MAX_FREE_TEXT_LENGTH).optional(),
+  upsellOpportunities: z.string().max(MAX_FREE_TEXT_LENGTH).optional(),
 }).strict()
 
 // Thrown only for the one legitimate concurrency race this endpoint must
