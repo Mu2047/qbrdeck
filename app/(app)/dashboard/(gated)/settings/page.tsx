@@ -398,10 +398,18 @@ export default function SettingsPage() {
                   <div key={inv.id} className="flex items-center justify-between p-4">
                     <div>
                       <p className="text-sm font-medium text-navy-800">{inv.email}</p>
-                      <p className="text-xs text-gray-400">{ROLE_LABELS[inv.role as Role]?.label} · Expires {new Date(inv.expiresAt).toLocaleDateString()}</p>
+                      <p className="text-xs text-gray-400">
+                        {ROLE_LABELS[inv.role as Role]?.label} · {inv.expired ? 'Expired' : 'Expires'} {new Date(inv.expiresAt).toLocaleDateString()}
+                      </p>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs px-2 py-1 rounded-full bg-amber-50 text-amber-600 font-medium">Pending</span>
+                      {/* An expired invitation holds no seat and cannot be
+                          accepted — never present it as active. */}
+                      {inv.expired ? (
+                        <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-500 font-medium">Expired</span>
+                      ) : (
+                        <span className="text-xs px-2 py-1 rounded-full bg-amber-50 text-amber-600 font-medium">Pending</span>
+                      )}
                       {isOwner && (
                         <button onClick={() => revokeInvite(inv.id)} className="text-gray-300 hover:text-red-500 transition-colors">
                           <Trash2 size={14} />

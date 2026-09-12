@@ -2,13 +2,28 @@ import { auth } from '@clerk/nextjs/server'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceMembership } from '@/lib/workspace'
-import { can, canInviteMoreMembers, canGrantRole, SEAT_LIMITS } from '@/lib/permissions'
+import { lockWorkspaceRow } from '@/lib/workspace-lock'
+import { can, canGrantRole } from '@/lib/permissions'
+import { getLimits } from '@/lib/limits'
+import {
+  INVITE_EXPIRY_MS,
+  countReservedSeats,
+  generateInviteToken,
+  hasSeatCapacity,
+  hashInviteToken,
+  isInviteableRole,
+  normalizeInviteEmail,
+} from '@/lib/team-invites'
 import { TeamRole } from '@prisma/client'
 import { Resend } from 'resend'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
 export async function POST(req: NextRequest) {
+  // Declared outside the try so the email-failure path below can compensate
+  // the exact invitation this request created, and only that one.
+  let createdInviteId: string | null = null
+
   try {
     const { userId: clerkId } = auth()
     if (!clerkId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -19,14 +34,127 @@ export async function POST(req: NextRequest) {
     if (!can.inviteMembers(membership.role))
       return NextResponse.json({ error: 'You do not have permission to invite members' }, { status: 403 })
 
-    // Check seat limits
-    const plan = membership.subscription?.plan ?? 'FREE'
-    const memberCount = await prisma.workspaceMember.count({
-      where: { workspaceId: membership.workspaceId },
+    const { email, role } = await req.json()
+    if (!email || !role) return NextResponse.json({ error: 'Email and role required' }, { status: 400 })
+
+    // Server-side role validation, independent of the Settings UI. OWNER is
+    // never inviteable: a manipulated request asking for it is rejected here
+    // even though the dropdown never offers it.
+    if (!isInviteableRole(role))
+      return NextResponse.json({ error: 'Invalid role' }, { status: 400 })
+
+    // Defence in depth — the inviter still may not grant a role above their own.
+    if (!canGrantRole(membership.role, role as TeamRole))
+      return NextResponse.json({ error: 'You cannot grant a role equal to or above your own' }, { status: 403 })
+
+    const normalizedEmail = normalizeInviteEmail(String(email))
+    if (!normalizedEmail.includes('@'))
+      return NextResponse.json({ error: 'A valid email address is required' }, { status: 400 })
+
+    // ── Seat reservation ──────────────────────────────────────────────────────
+    // Locked, atomic, and committed BEFORE the invitation email is sent: two
+    // concurrent invites against the last Growth seat can no longer both
+    // observe the same pre-reservation counts and both succeed. Mirrors the
+    // pattern already used for Client capacity in app/api/clients/route.ts and
+    // QBR quota in app/api/generate-qbr/route.ts. No network call happens
+    // inside this transaction.
+    const rawToken = generateInviteToken()
+    const tokenHash = hashInviteToken(rawToken)
+    const expiresAt = new Date(Date.now() + INVITE_EXPIRY_MS)
+
+    const result = await prisma.$transaction(async (tx) => {
+      await lockWorkspaceRow(tx, membership.workspaceId)
+
+      // Re-read the plan fresh under the lock rather than trusting the
+      // pre-transaction membership.subscription value.
+      const subscription = await tx.subscription.findUnique({
+        where: { workspaceId: membership.workspaceId },
+        select: { plan: true },
+      })
+      const plan = subscription?.plan ?? 'FREE'
+      const limit = getLimits(plan).teamSeats
+
+      // Already a member of this workspace? Matched case-insensitively so a
+      // differently-cased address cannot slip a second invitation through.
+      const existingUser = await tx.user.findFirst({
+        where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+        select: { id: true },
+      })
+      if (existingUser) {
+        const existingMember = await tx.workspaceMember.findUnique({
+          where: { workspaceId_userId: { workspaceId: membership.workspaceId, userId: existingUser.id } },
+          select: { id: true },
+        })
+        if (existingMember) return { kind: 'already_member' } as const
+      }
+
+      // Any prior invitation row for this address in this workspace. Matched
+      // case-insensitively because legacy rows were stored verbatim, and the
+      // [workspaceId, email] unique constraint is case-sensitive — creating a
+      // differently-cased row would otherwise duplicate the reservation.
+      const existingInvite = await tx.workspaceInvite.findFirst({
+        where: {
+          workspaceId: membership.workspaceId,
+          email: { equals: normalizedEmail, mode: 'insensitive' },
+        },
+      })
+
+      const now = new Date()
+      if (
+        existingInvite &&
+        existingInvite.status === 'PENDING' &&
+        existingInvite.expiresAt > now
+      ) {
+        // A still-valid pending invitation already holds this seat. Never
+        // silently mint a second token for the same address.
+        return { kind: 'already_invited' } as const
+      }
+
+      const { reserved } = await countReservedSeats(tx, membership.workspaceId, now)
+      if (!hasSeatCapacity(plan, reserved)) {
+        return { kind: 'seat_limit_reached', plan, limit } as const
+      }
+
+      // Reuse an expired/revoked/accepted row for this address rather than
+      // inserting alongside it — the [workspaceId, email] unique constraint
+      // permits only one row per address per workspace.
+      const invite = existingInvite
+        ? await tx.workspaceInvite.update({
+            where: { id: existingInvite.id },
+            data: {
+              email:            normalizedEmail,
+              role:             role as TeamRole,
+              token:            tokenHash,
+              status:           'PENDING',
+              expiresAt,
+              invitedById:      membership.userId,
+              acceptedAt:       null,
+              acceptedByUserId: null,
+              revokedAt:        null,
+            },
+          })
+        : await tx.workspaceInvite.create({
+            data: {
+              workspaceId: membership.workspaceId,
+              email:       normalizedEmail,
+              role:        role as TeamRole,
+              token:       tokenHash,
+              invitedById: membership.userId,
+              expiresAt,
+            },
+          })
+
+      return { kind: 'created', inviteId: invite.id } as const
     })
 
-    if (!canInviteMoreMembers(plan, memberCount)) {
-      const limit = SEAT_LIMITS[plan] ?? 1
+    if (result.kind === 'already_member')
+      return NextResponse.json({ error: 'This user is already a team member' }, { status: 400 })
+
+    if (result.kind === 'already_invited')
+      return NextResponse.json({ error: 'This email already has a pending invitation' }, { status: 409 })
+
+    if (result.kind === 'seat_limit_reached') {
+      const { plan, limit } = result
       return NextResponse.json({
         error: 'SEAT_LIMIT_REACHED',
         plan,
@@ -37,56 +165,18 @@ export async function POST(req: NextRequest) {
       }, { status: 403 })
     }
 
-    const { email, role } = await req.json()
-    if (!email || !role) return NextResponse.json({ error: 'Email and role required' }, { status: 400 })
+    createdInviteId = result.inviteId
 
-    // Validate role is a real enum value
-    const VALID_ROLES: TeamRole[] = ['OWNER', 'ADMIN', 'MEMBER', 'VIEWER']
-    if (!VALID_ROLES.includes(role as TeamRole))
-      return NextResponse.json({ error: 'Invalid role' }, { status: 400 })
-
-    // P1: enforce that the inviter may grant THIS role (prevents privilege escalation)
-    if (!canGrantRole(membership.role, role as TeamRole))
-      return NextResponse.json({ error: 'You cannot grant a role equal to or above your own' }, { status: 403 })
-
-    // Check if already a member
-    const existingUser = await prisma.user.findUnique({ where: { email } })
-    if (existingUser) {
-      const existingMember = await prisma.workspaceMember.findUnique({
-        where: { workspaceId_userId: { workspaceId: membership.workspaceId, userId: existingUser.id } },
-      })
-      if (existingMember)
-        return NextResponse.json({ error: 'This user is already a team member' }, { status: 400 })
-    }
-
-    // Upsert invite (reset if expired/revoked)
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
-
-    const invite = await prisma.workspaceInvite.upsert({
-      where: { workspaceId_email: { workspaceId: membership.workspaceId, email } },
-      update: {
-        role: role as TeamRole,
-        status: 'PENDING',
-        expiresAt,
-        invitedById: membership.userId,
-      },
-      create: {
-        workspaceId: membership.workspaceId,
-        email,
-        role: role as TeamRole,
-        invitedById: membership.userId,
-        expiresAt,
-      },
-    })
-
-    const inviteUrl = `${process.env.NEXT_PUBLIC_APP_URL}/invite/${invite.token}`
+    // ── Invitation email — AFTER the transaction committed ────────────────────
+    // The raw token exists only here and in the URL below; the database holds
+    // only its SHA-256 hash. Never logged.
+    const inviteUrl = `${process.env.NEXT_PUBLIC_APP_URL}/invite/${rawToken}`
     const workspace = await prisma.workspace.findUnique({ where: { id: membership.workspaceId } })
     const inviter   = await prisma.user.findUnique({ where: { id: membership.userId } })
 
-    // Send invite email
     await resend.emails.send({
       from: 'QBR Deck <noreply@misecuretechsolutions.com>',
-      to:      email,
+      to:      normalizedEmail,
       subject: `You're invited to join ${workspace?.name ?? 'QBR Deck'}`,
       html: `
         <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
@@ -106,10 +196,26 @@ export async function POST(req: NextRequest) {
       `,
     })
 
-    return NextResponse.json({ success: true, inviteId: invite.id })
+    return NextResponse.json({ success: true, inviteId: result.inviteId })
   } catch (err: any) {
     console.error('[invite]', err)
-    return NextResponse.json({ error: err.message ?? 'Failed to send invite' }, { status: 500 })
+
+    // The invitation row committed but delivery failed — release the seat it
+    // reserved rather than leaving an unusable reservation behind. Scoped to
+    // this request's own invitation id AND guarded on status: 'PENDING', so it
+    // can never revoke an invitation that another request has since accepted.
+    if (createdInviteId) {
+      try {
+        await prisma.workspaceInvite.updateMany({
+          where: { id: createdInviteId, status: 'PENDING' },
+          data:  { status: 'REVOKED', revokedAt: new Date() },
+        })
+      } catch (compErr) {
+        console.error('[invite] Failed to release reserved seat after email failure', compErr)
+      }
+    }
+
+    return NextResponse.json({ error: 'Failed to send invite' }, { status: 500 })
   }
 }
 
@@ -131,13 +237,16 @@ export async function DELETE(req: NextRequest) {
     if (!invite || invite.workspaceId !== membership.workspaceId)
       return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
+    // Revoking releases the seat immediately (countReservedSeats only counts
+    // PENDING rows) and makes the token unusable (acceptance requires PENDING).
     await prisma.workspaceInvite.update({
       where: { id: inviteId },
-      data:  { status: 'REVOKED' },
+      data:  { status: 'REVOKED', revokedAt: new Date() },
     })
 
     return NextResponse.json({ success: true })
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 })
+    console.error('[invite:revoke]', err)
+    return NextResponse.json({ error: 'Failed to revoke invitation' }, { status: 500 })
   }
 }

@@ -25,6 +25,14 @@ export default async function BillingPage() {
   const qbrUsed      = sub?.qbrCount    ?? 0
   const exportUsed   = sub?.exportCount ?? 0
 
+  // Seats are reserved by active members AND still-valid pending invitations —
+  // the same definition the invite route enforces. Counting members alone
+  // would show "3 / 5" while two pending invitations already hold the rest.
+  const pendingInviteCount = await prisma.workspaceInvite.count({
+    where: { workspaceId, status: 'PENDING', expiresAt: { gt: new Date() } },
+  })
+  const seatsUsed = memberCount + pendingInviteCount
+
   return (
     <div className="p-8 max-w-5xl">
       <div className="mb-8">
@@ -68,10 +76,10 @@ export default async function BillingPage() {
             isFree={currentPlan === 'FREE'}
           />
 
-          {/* Team seats */}
+          {/* Team seats — members + valid pending invitations */}
           <UsageRow
-            label="Team members"
-            used={memberCount}
+            label={pendingInviteCount > 0 ? 'Team seats (incl. pending invites)' : 'Team members'}
+            used={seatsUsed}
             limit={limits.teamSeats}
             isFree={currentPlan === 'FREE'}
           />
