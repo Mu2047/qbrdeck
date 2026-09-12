@@ -3,6 +3,7 @@ import { join } from 'path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ApiResult } from '@/lib/api-client'
 import { sendQBREmail } from '@/lib/email'
+import { resolveBranding } from '@/lib/branding'
 
 // This repo has no jsdom/@testing-library/react and no established Clerk/
 // Prisma mocking pattern for route handlers (see tests/reminder-status-
@@ -296,7 +297,10 @@ function baseEmailArgs() {
     clientName: 'Acme Corp',
     quarter: '3',
     year: 2026,
-    mspName: 'MSP',
+    // Built via the real resolveBranding() — the same source of truth the
+    // send route itself now uses — never a hand-rolled branding shape.
+    branding: resolveBranding({ plan: 'FREE', workspaceName: 'Acme MSP' }),
+    logoUrl: null as string | null,
     portalUrl: 'https://example.com/portal/abc123',
   }
 }
@@ -368,6 +372,146 @@ describe('sendQBREmail — Resend error propagation (real behavioral tests again
   })
 })
 
+// ── lib/email.ts — white-label branding contract (Stage 1) ──────────────────
+// Real behavioral tests: the actual resolveBranding() feeds the actual
+// sendQBREmail(); only the 'resend' package is mocked. Assertions inspect the
+// exact payload handed to the mocked Resend client.
+
+function lastSentPayload(): { from: string; subject: string; html: string } {
+  const call = mockSend.mock.calls.at(-1)
+  if (!call) throw new Error('resend.emails.send was not called')
+  return call[0]
+}
+
+describe('sendQBREmail — white-label branding contract (Stage 1)', () => {
+  beforeEach(() => {
+    mockSend.mockResolvedValue({ data: { id: 'email_123' }, error: null })
+  })
+
+  it('FREE resolves to QBR Deck platform branding — no raw workspace name, no "Powered by" suppressed', async () => {
+    const branding = resolveBranding({ plan: 'FREE', workspaceName: 'Acme MSP' })
+    await sendQBREmail({ ...baseEmailArgs(), branding })
+    const { html } = lastSentPayload()
+
+    expect(html).toContain('Prepared with QBR Deck')
+    expect(html).toContain('Powered by QBR Deck')
+    expect(html).not.toContain('Acme MSP')
+  })
+
+  it('SOLO resolves to the same QBR Deck platform branding as FREE', async () => {
+    const branding = resolveBranding({ plan: 'SOLO', workspaceName: 'Acme MSP' })
+    await sendQBREmail({ ...baseEmailArgs(), branding })
+    const { html } = lastSentPayload()
+
+    expect(html).toContain('Prepared with QBR Deck')
+    expect(html).toContain('Powered by QBR Deck')
+    expect(html).not.toContain('Acme MSP')
+  })
+
+  it('GROWTH uses the resolved MSP/workspace brand name and does not render "Powered by QBR Deck"', async () => {
+    const branding = resolveBranding({ plan: 'GROWTH', workspaceName: 'Bright IT Partners' })
+    await sendQBREmail({ ...baseEmailArgs(), branding })
+    const { html } = lastSentPayload()
+
+    expect(html).toContain('Prepared by Bright IT Partners')
+    expect(html).not.toContain('Powered by QBR Deck')
+    expect(html).not.toContain('Prepared with QBR Deck')
+  })
+
+  it('AGENCY uses the resolved MSP/workspace brand name and does not render "Powered by QBR Deck"', async () => {
+    const branding = resolveBranding({ plan: 'AGENCY', workspaceName: 'Summit Managed Services' })
+    await sendQBREmail({ ...baseEmailArgs(), branding })
+    const { html } = lastSentPayload()
+
+    expect(html).toContain('Prepared by Summit Managed Services')
+    expect(html).not.toContain('Powered by QBR Deck')
+  })
+
+  it('raw workspace.name cannot bypass plan branding rules — only resolveBranding()\'s own mspName field ever reaches the template', async () => {
+    // A FREE-plan branding result whose underlying workspace name matches a
+    // real Growth-style MSP name must still render as platform-branded,
+    // because sendQBREmail only ever reads branding.isWhiteLabel/mspName/
+    // showPoweredBy — never a raw workspace-name string of its own.
+    const branding = resolveBranding({ plan: 'FREE', workspaceName: 'Sneaky White Label Co' })
+    await sendQBREmail({ ...baseEmailArgs(), branding })
+    const { html } = lastSentPayload()
+
+    expect(html).not.toContain('Sneaky White Label Co')
+    expect(html).toContain('Prepared with QBR Deck')
+  })
+
+  it('includes the configured white-label logo as an <img> when isWhiteLabel and a logoUrl are both present', async () => {
+    const branding = resolveBranding({ plan: 'GROWTH', workspaceName: 'Bright IT Partners' })
+    await sendQBREmail({
+      ...baseEmailArgs(),
+      branding,
+      logoUrl: 'https://blob.vercel-storage.com/logos/ws123-456.png',
+    })
+    const { html } = lastSentPayload()
+
+    expect(html).toMatch(/<img src="https:\/\/blob\.vercel-storage\.com\/logos\/ws123-456\.png"/)
+  })
+
+  it('falls back cleanly to text-only branding when isWhiteLabel is true but no logoUrl is set', async () => {
+    const branding = resolveBranding({ plan: 'AGENCY', workspaceName: 'Summit Managed Services' })
+    await sendQBREmail({ ...baseEmailArgs(), branding, logoUrl: null })
+    const { html } = lastSentPayload()
+
+    expect(html).not.toContain('<img')
+    expect(html).toContain('Prepared by Summit Managed Services')
+  })
+
+  it('never renders a logo for a platform-branded (Free/Solo) plan, even if a logoUrl value is somehow present', async () => {
+    const branding = resolveBranding({ plan: 'FREE', workspaceName: 'Acme MSP' })
+    await sendQBREmail({
+      ...baseEmailArgs(),
+      branding,
+      logoUrl: 'https://blob.vercel-storage.com/logos/should-not-render.png',
+    })
+    const { html } = lastSentPayload()
+
+    expect(html).not.toContain('<img')
+  })
+
+  it('HTML-escapes a workspace/MSP name containing markup-significant characters', async () => {
+    const branding = resolveBranding({ plan: 'GROWTH', workspaceName: `Bright & Sons <IT> "MSP"` })
+    await sendQBREmail({ ...baseEmailArgs(), branding })
+    const { html } = lastSentPayload()
+
+    expect(html).not.toContain('<IT>')
+    expect(html).toContain('Bright &amp; Sons &lt;IT&gt; &quot;MSP&quot;')
+  })
+
+  it('the From address/display name is unchanged for every plan (technical sender preserved; no domain/display change in this stage)', async () => {
+    for (const plan of ['FREE', 'SOLO', 'GROWTH', 'AGENCY'] as const) {
+      const branding = resolveBranding({ plan, workspaceName: 'Acme MSP' })
+      await sendQBREmail({ ...baseEmailArgs(), branding })
+      expect(lastSentPayload().from).toBe('QBR Deck <noreply@misecuretechsolutions.com>')
+    }
+  })
+
+  it('the subject line is unchanged by branding — no plan ever alters the subject copy', async () => {
+    for (const plan of ['FREE', 'GROWTH'] as const) {
+      const branding = resolveBranding({ plan, workspaceName: 'Acme MSP' })
+      await sendQBREmail({ ...baseEmailArgs(), branding })
+      expect(lastSentPayload().subject).toBe('Your Q3 2026 Quarterly Business Review — Acme Corp')
+    }
+  })
+
+  it('the portal/share-link CTA URL is unaffected by branding, for both platform and white-label plans', async () => {
+    for (const plan of ['SOLO', 'GROWTH'] as const) {
+      const branding = resolveBranding({ plan, workspaceName: 'Acme MSP' })
+      await sendQBREmail({ ...baseEmailArgs(), branding })
+      const { html } = lastSentPayload()
+      expect(html).toContain('href="https://example.com/portal/abc123"')
+    }
+  })
+
+  it('no test in this file makes a real network call — the resend package is mocked at module level for the whole file', () => {
+    expect(vi.isMockFunction(mockSend)).toBe(true)
+  })
+})
+
 // ── send route — source contract ─────────────────────────────────────────────
 
 describe('send route — source contract (no Clerk/Prisma request-mocking harness exists yet for direct route testing)', () => {
@@ -388,5 +532,36 @@ describe('send route — source contract (no Clerk/Prisma request-mocking harnes
     expect(routeSource).toMatch(
       /catch\s*\([^)]*\)\s*\{[\s\S]*?NextResponse\.json\(\{\s*error:[\s\S]*?\},\s*\{\s*status:\s*500\s*\}\)/
     )
+  })
+
+  it('resolves branding via the shared resolveBranding() before sending the email — never re-derives plan/branding logic locally (Stage 1)', () => {
+    expect(routeSource).toMatch(/import \{ resolveBranding \} from '@\/lib\/branding'/)
+
+    const brandingIdx = routeSource.search(/const branding = resolveBranding\(\{/)
+    const sendIdx = routeSource.search(/await sendQBREmail\(/)
+    expect(brandingIdx).toBeGreaterThan(-1)
+    expect(sendIdx).toBeGreaterThan(-1)
+    expect(brandingIdx).toBeLessThan(sendIdx)
+  })
+
+  it('passes the resolved branding object and workspace logoUrl straight through — no raw mspName/workspace-name string is constructed here', () => {
+    expect(routeSource).toMatch(/branding,\s*\n\s*logoUrl:\s*workspace\?\.logoUrl,/)
+    expect(routeSource).not.toMatch(/const mspName/)
+  })
+
+  it('branding is resolved from the caller\'s own subscription plan, defaulting to FREE — same convention as every other branding call site', () => {
+    expect(routeSource).toMatch(/plan:\s*membership\.subscription\?\.plan \?\? 'FREE',/)
+  })
+
+  it('still resolves the target QBR scoped by workspaceId and excludes soft-deleted rows — unchanged by the branding fix', () => {
+    expect(routeSource).toMatch(/const qbr = await prisma\.qBR\.findFirst\(\{\s*where:\s*\{ id: params\.qbrId, workspaceId: membership\.workspaceId, deletedAt: null \},/)
+  })
+
+  it('still requires can.exportQBR permission before doing any work — unchanged by the branding fix', () => {
+    expect(routeSource).toMatch(/if \(!can\.exportQBR\(membership\.role\)\)/)
+  })
+
+  it('still mints a fresh ShareLink via createShareLink — token/security semantics untouched by this stage', () => {
+    expect(routeSource).toMatch(/const token = await createShareLink\(\{/)
   })
 })

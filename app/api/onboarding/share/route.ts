@@ -6,6 +6,7 @@ import { getWorkspaceMembership } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
 import { createShareLink } from '@/lib/share-links'
 import { sendQBREmail } from '@/lib/email'
+import { resolveBranding } from '@/lib/branding'
 
 // No qbrId/clientId/workspaceId/userId field — the target QBR is resolved
 // exclusively from WorkspaceOnboarding.onboardingQbrId, never from the
@@ -81,14 +82,21 @@ export async function POST(req: NextRequest) {
     const token = await createShareLink({ qbrId: anchoredQbr.id, workspaceId, userId })
     const portalUrl = `${process.env.NEXT_PUBLIC_APP_URL}/portal/${token}`
     const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId } })
-    const mspName = workspace?.name ?? 'MI Secure Tech Solutions'
+
+    // Same source of truth already used by the generic send route and every
+    // other branding-aware surface — never re-derive plan/branding logic here.
+    const branding = resolveBranding({
+      plan:          membership.subscription?.plan ?? 'FREE',
+      workspaceName: workspace?.name ?? 'QBR Deck',
+    })
 
     await sendQBREmail({
       to:         parsed.data.email,
       clientName: anchoredQbr.client.name,
       quarter:    anchoredQbr.quarter,
       year:       anchoredQbr.year,
-      mspName,
+      branding,
+      logoUrl: workspace?.logoUrl,
       portalUrl,
     })
 
