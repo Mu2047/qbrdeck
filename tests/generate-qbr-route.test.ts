@@ -125,10 +125,10 @@ describe('generate-qbr route — quota reservation is atomic and precedes the An
 })
 
 describe('generate-qbr route — failed generation compensates the reservation, never leaves a permanent charge (D4B)', () => {
-  it('the catch block compensates the reservation only when one was actually made', () => {
+  it('the catch block compensates the reservation only when one was actually made and the QBR was not already persisted (D4B blocker repair)', () => {
     const catchMatch = routeSource.match(/\} catch \(err: any\) \{[\s\S]*?\n  \}\n\}/)
     const catchBody = catchMatch?.[0] ?? ''
-    expect(catchBody).toMatch(/if \(reservation\) \{\s*await compensateQbrReservation\(reservation\.workspaceId, reservation\.periodStart\)\s*\}/)
+    expect(catchBody).toMatch(/if \(reservation && !qbrPersisted\) \{\s*await compensateQbrReservation\(reservation\.workspaceId, reservation\.periodStart\)\s*\}/)
   })
 
   it('compensateQbrReservation re-locks the same Workspace row and only decrements — never creates or increments', () => {
@@ -234,5 +234,86 @@ describe('generate-qbr route — error hygiene: unexpected failures return a sta
     expect(catchBody).toMatch(/return NextResponse\.json\(\{ error: 'Failed to generate QBR' \}, \{ status: 500 \}\)/)
     expect(catchBody).not.toMatch(/err\.message/)
     expect(catchBody).not.toMatch(/err\.error/)
+  })
+})
+
+describe('generate-qbr route — qbrPersisted guard: a persisted QBR is never compensated (D4B blocker repair)', () => {
+  it('qbrPersisted is declared false, alongside reservation, before the try block', () => {
+    const declIdx = routeSource.indexOf('let qbrPersisted = false')
+    const tryIdx  = routeSource.indexOf('try {')
+    const reservationDeclIdx = routeSource.indexOf('let reservation: { workspaceId: string; periodStart: Date } | null = null')
+    expect(declIdx).toBeGreaterThan(-1)
+    expect(reservationDeclIdx).toBeGreaterThan(-1)
+    expect(reservationDeclIdx).toBeLessThan(declIdx)
+    expect(declIdx).toBeLessThan(tryIdx)
+  })
+
+  it('qbrPersisted is set to true immediately after prisma.qBR.create(...) succeeds, before any other statement', () => {
+    const createIdx = routeSource.indexOf('const qbr = await prisma.qBR.create({')
+    const setIdx    = routeSource.indexOf('qbrPersisted = true')
+    expect(createIdx).toBeGreaterThan(-1)
+    expect(setIdx).toBeGreaterThan(-1)
+    expect(createIdx).toBeLessThan(setIdx)
+
+    // "immediately after" — no other await between the qbr.create(...) call
+    // opening and the qbrPersisted assignment (excluding the "await" that is
+    // itself part of "const qbr = await prisma.qBR.create({").
+    const afterCreateOpen = createIdx + 'const qbr = await prisma.qBR.create({'.length
+    const between = routeSource.slice(afterCreateOpen, setIdx)
+    expect(between).not.toMatch(/\bawait\b/)
+  })
+
+  it('the outer catch compensates only when reservation is set AND qbrPersisted is false', () => {
+    const catchMatch2 = routeSource.match(/\} catch \(err: any\) \{[\s\S]*?\n  \}\n\}/)
+    const body = catchMatch2?.[0] ?? ''
+    expect(body).toMatch(/if \(reservation && !qbrPersisted\) \{\s*await compensateQbrReservation\(reservation\.workspaceId, reservation\.periodStart\)\s*\}/)
+  })
+
+  it('a pre-persistence failure path still has reservation set and qbrPersisted still false — compensation remains reachable', () => {
+    // Structural proof: qbrPersisted is assigned in exactly one place (right
+    // after qbr.create), so any throw between the reservation commit and that
+    // single assignment necessarily reaches the catch with qbrPersisted still
+    // false and reservation already set — satisfying `reservation && !qbrPersisted`.
+    const assignments = routeSource.match(/qbrPersisted\s*=\s*true/g) ?? []
+    expect(assignments.length).toBe(1)
+  })
+
+  it('a post-persistence failure cannot compensate — qbrPersisted is set to false only once (its declaration), never reassigned back to false afterward', () => {
+    const falseOccurrences = (routeSource.match(/qbrPersisted = false/g) ?? []).length
+    expect(falseOccurrences).toBe(1) // the initial `let qbrPersisted = false` declaration, and nothing else
+  })
+})
+
+describe('generate-qbr route — nextQbrDate/reminder bookkeeping is isolated best-effort (D4B blocker repair)', () => {
+  it('the reminder block has its own try/catch, separate from the outer route catch', () => {
+    expect(routeSource).toMatch(/try \{\s*const \{ suggestNextQbrDate \} = await import\('@\/lib\/reminder-utils'\)[\s\S]*?\} catch \(reminderErr\) \{/)
+  })
+
+  it('the dynamic import of lib/reminder-utils lives inside the isolated try, not before qbrPersisted is set', () => {
+    const setIdx = routeSource.indexOf('qbrPersisted = true')
+    const importIdx = routeSource.indexOf("await import('@/lib/reminder-utils')")
+    expect(setIdx).toBeGreaterThan(-1)
+    expect(importIdx).toBeGreaterThan(-1)
+    expect(setIdx).toBeLessThan(importIdx)
+  })
+
+  it('a reminder-update failure is logged with a clear route-specific tag', () => {
+    expect(routeSource).toMatch(/console\.error\('\[generate-qbr\] Failed to update next QBR reminder', reminderErr\)/)
+  })
+
+  it('the reminder catch block never rethrows and never returns a response — execution falls through to the success response', () => {
+    const reminderCatchMatch = routeSource.match(/\} catch \(reminderErr\) \{[\s\S]*?\n    \}/)
+    expect(reminderCatchMatch).not.toBeNull()
+    const body = reminderCatchMatch?.[0] ?? ''
+    expect(body).not.toMatch(/throw/)
+    expect(body).not.toMatch(/return/)
+  })
+
+  it('the success response (qbrId, slides, clientName, healthScore, healthStatus) is still returned after the isolated reminder block, unconditionally', () => {
+    const reminderBlockEnd = routeSource.indexOf("console.error('[generate-qbr] Failed to update next QBR reminder', reminderErr)")
+    const returnIdx = routeSource.indexOf('return NextResponse.json({\n      qbrId:')
+    expect(reminderBlockEnd).toBeGreaterThan(-1)
+    expect(returnIdx).toBeGreaterThan(-1)
+    expect(reminderBlockEnd).toBeLessThan(returnIdx)
   })
 })

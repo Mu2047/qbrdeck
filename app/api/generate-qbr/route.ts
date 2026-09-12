@@ -36,6 +36,11 @@ export async function POST(req: NextRequest) {
   // whether a quota unit was actually reserved and, if so, compensate it —
   // `const`s declared inside try are not visible to its own catch.
   let reservation: { workspaceId: string; periodStart: Date } | null = null
+  // Set to true the instant the QBR row is durably persisted. Once true, a
+  // later, unrelated failure (e.g. secondary reminder bookkeeping) must never
+  // compensate the reservation — the customer already received a real,
+  // billable, AI-generated QBR, so its quota unit is correctly spent.
+  let qbrPersisted = false
   try {
     const { userId: clerkId } = auth()
     if (!clerkId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -239,7 +244,10 @@ export async function POST(req: NextRequest) {
         exportTemplateVersion: VERSIONS.exportTemplate,
       },
     })
- 
+    // The QBR is now durably persisted — no failure from here on may cause
+    // its already-reserved quota unit to be compensated.
+    qbrPersisted = true
+
     // ── Resolve placeholders for the immediate preview (display only) ─────────
     // qbr.slides was just persisted above as the RAW AI output, unchanged —
     // this resolved copy exists only in the API response below, for the
@@ -276,15 +284,23 @@ export async function POST(req: NextRequest) {
       console.error('[unresolved-placeholder][generate-qbr]', qbr.id)
     }
 
-    // ── Auto-suggest next QBR date ────────────────────────────────────────────
-    const { suggestNextQbrDate } = await import('@/lib/reminder-utils')
-    if (!client.nextQbrDate) {
-      await prisma.client.update({
-        where: { id: client.id },
-        data: { nextQbrDate: suggestNextQbrDate(data.quarter, data.year) },
-      })
+    // ── Auto-suggest next QBR date — best-effort, isolated ────────────────────
+    // Secondary bookkeeping only: the QBR itself is already fully persisted
+    // (qbrPersisted is already true). A failure here must never turn an
+    // already-successful generation into a customer-facing failure, and must
+    // never reach the outer catch's compensation logic.
+    try {
+      const { suggestNextQbrDate } = await import('@/lib/reminder-utils')
+      if (!client.nextQbrDate) {
+        await prisma.client.update({
+          where: { id: client.id },
+          data: { nextQbrDate: suggestNextQbrDate(data.quarter, data.year) },
+        })
+      }
+    } catch (reminderErr) {
+      console.error('[generate-qbr] Failed to update next QBR reminder', reminderErr)
     }
- 
+
     // QBR quota was already atomically reserved above, before the Anthropic
     // call — no further increment here.
 
@@ -298,7 +314,10 @@ export async function POST(req: NextRequest) {
  
   } catch (err: any) {
     console.error('[generate-qbr]', err)
-    if (reservation) {
+    // Never compensate a reservation whose QBR was already durably
+    // persisted — only a pre-persistence failure (auth/quota/Anthropic/
+    // parsing/QBR-create itself) may return the reserved unit.
+    if (reservation && !qbrPersisted) {
       await compensateQbrReservation(reservation.workspaceId, reservation.periodStart)
     }
     return NextResponse.json({ error: 'Failed to generate QBR' }, { status: 500 })
