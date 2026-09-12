@@ -2,7 +2,7 @@ import { auth } from '@clerk/nextjs/server'
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { lockWorkspaceRow } from '@/lib/workspace-lock'
-import { countReservedSeats, fitsWithinSeatLimit, hashInviteToken } from '@/lib/team-invites'
+import { countReservedSeats, fitsWithinSeatLimit, hashInviteToken, isModernInviteToken } from '@/lib/team-invites'
 
 // Thrown only for the one legitimate concurrency race this endpoint must
 // detect: the conditional PENDING -> ACCEPTED claim lost to a simultaneous
@@ -26,10 +26,19 @@ export async function POST(req: NextRequest) {
 
     // Legacy fallback: invitations created before that change stored a raw
     // cuid() in the same column, so an outstanding one must keep working.
-    // Mirrors resolveSharedQbr()'s legacy branch in lib/share-links.ts. This
-    // can only ever match a row whose stored value is not a hash, so it does
-    // not weaken the hashed path above.
-    if (!invite) {
+    // Mirrors resolveSharedQbr()'s legacy branch in lib/share-links.ts.
+    //
+    // SECURITY: this fallback is gated on isModernInviteToken(token) being
+    // false. Without that gate, submitting the STORED HASH itself as `token`
+    // would defeat hash-at-rest protection: hashing the hash misses above,
+    // but a raw lookup for `token` would then match the very row whose hash
+    // was submitted — turning the hash into a second usable bearer secret.
+    // Both a modern raw token and a modern stored hash are 64 hex characters,
+    // so this check rejects the hash exactly as it would the real token — the
+    // fallback is never reachable for anything shaped like the new scheme,
+    // legitimate or stolen. A legacy cuid() (25 chars, starts with "c") never
+    // matches this shape, so real legacy invitations are unaffected.
+    if (!invite && !isModernInviteToken(token)) {
       invite = await prisma.workspaceInvite.findUnique({ where: { token } })
     }
 

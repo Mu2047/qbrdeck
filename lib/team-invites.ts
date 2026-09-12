@@ -12,13 +12,27 @@ import { getLimits } from '@/lib/limits'
 // meaning becomes "token hash" for every invitation created from here on.
 //
 // Legacy compatibility: invitations created before this change stored a raw
-// cuid() in the same column. Acceptance therefore tries the hashed lookup
-// first and falls back to a raw lookup, exactly like resolveSharedQbr() does
-// for pre-ShareLink portal links. The fallback only ever matches rows whose
-// stored value is not a hash, so it cannot weaken new-token behavior.
+// Prisma cuid() (25 characters, always starting with "c", base-36 lowercase —
+// e.g. "cl9x2k3p40000ab1c2d3e4f5g") in the same column. Acceptance therefore
+// tries the hashed lookup first and, ONLY when the incoming token cannot
+// possibly be a modern one, falls back to a raw lookup — see
+// isModernInviteToken() below for why that gate is load-bearing, not
+// optional.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const INVITE_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000 // 7 days — unchanged
+
+// Both a modern raw token (randomBytes(32).toString('hex')) and its stored
+// SHA-256 hash (createHash('sha256').update(...).digest('hex')) are exactly
+// 64 lowercase hex characters — that shape is unique to this scheme. A
+// pre-hardening Prisma cuid() is 25 characters starting with "c", so there is
+// no possible overlap between the two formats: the check below is a hard
+// boundary, not a heuristic.
+const MODERN_TOKEN_PATTERN = /^[0-9a-f]{64}$/
+
+export function isModernInviteToken(token: string): boolean {
+  return MODERN_TOKEN_PATTERN.test(token)
+}
 
 export function hashInviteToken(rawToken: string): string {
   return createHash('sha256').update(rawToken).digest('hex')

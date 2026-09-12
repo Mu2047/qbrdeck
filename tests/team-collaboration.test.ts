@@ -12,6 +12,7 @@ import {
   hasSeatCapacity,
   hashInviteToken,
   isInviteableRole,
+  isModernInviteToken,
   normalizeInviteEmail,
 } from '@/lib/team-invites'
 
@@ -206,6 +207,82 @@ describe('invitation token construction (EXECUTABLE — real lib/team-invites.ts
 
   it('the invitation expiry window is unchanged at 7 days', () => {
     expect(INVITE_EXPIRY_MS).toBe(7 * 24 * 60 * 60 * 1000)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXECUTABLE — Stage 2B: stored hash cannot be used as a bearer credential
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Prior to this fix, submitting the STORED SHA-256 hash H as the acceptance
+// token defeated hash-at-rest protection: the hashed lookup for SHA256(H)
+// missed, but the unconditional legacy raw-token fallback then matched H
+// directly against the row it was the hash of. isModernInviteToken() closes
+// this by refusing the raw fallback for anything shaped like the new
+// 64-hex-character scheme — which both a real raw token and its own hash
+// always are — so only case (A) below can ever succeed, never case (B).
+
+describe('isModernInviteToken — the load-bearing gate on the legacy fallback (EXECUTABLE)', () => {
+  it('CASE A — a real generated raw token matches the modern shape', () => {
+    const rawToken = generateInviteToken()
+    expect(isModernInviteToken(rawToken)).toBe(true)
+  })
+
+  it('CASE B — the STORED HASH of a raw token also matches the modern shape (this is exactly why gating on shape, not on hash-lookup-miss alone, is required)', () => {
+    const rawToken = generateInviteToken()
+    const storedHash = hashInviteToken(rawToken)
+    expect(isModernInviteToken(storedHash)).toBe(true)
+  })
+
+  it('CASE C — a legacy Prisma cuid()-shaped token does NOT match the modern shape', () => {
+    // Real cuid() output: 25 characters, always starting with "c", base-36
+    // lowercase. Representative fixture — not a real Production token.
+    const legacyToken = 'cl9x2k3p40000ab1c2d3e4f5g'
+    expect(legacyToken.length).toBe(25)
+    expect(isModernInviteToken(legacyToken)).toBe(false)
+  })
+
+  it('rejects strings of the right length but wrong alphabet (uppercase hex, non-hex chars)', () => {
+    expect(isModernInviteToken('A'.repeat(64))).toBe(false) // uppercase — real hex output is lowercase
+    expect(isModernInviteToken('g'.repeat(64))).toBe(false) // 'g' is not a hex digit
+  })
+
+  it('rejects strings of the right alphabet but wrong length', () => {
+    expect(isModernInviteToken('a'.repeat(63))).toBe(false)
+    expect(isModernInviteToken('a'.repeat(65))).toBe(false)
+    expect(isModernInviteToken('')).toBe(false)
+  })
+
+  it('a real raw token and its own hash are BOTH modern-shaped, and are two different 64-hex values', () => {
+    const rawToken = generateInviteToken()
+    const storedHash = hashInviteToken(rawToken)
+    expect(isModernInviteToken(rawToken)).toBe(true)
+    expect(isModernInviteToken(storedHash)).toBe(true)
+    expect(rawToken).not.toBe(storedHash)
+  })
+})
+
+describe('accept route — legacy fallback is gated on isModernInviteToken (SOURCE-CONTRACT, Stage 2B repair)', () => {
+  it('imports isModernInviteToken from lib/team-invites', () => {
+    expect(acceptSource).toMatch(/import \{[^}]*\bisModernInviteToken\b[^}]*\} from '@\/lib\/team-invites'/)
+  })
+
+  it('the raw fallback executes only when the hashed lookup missed AND the token is not modern-shaped', () => {
+    expect(acceptSource).toMatch(
+      /if \(!invite && !isModernInviteToken\(token\)\) \{\s*invite = await prisma\.workspaceInvite\.findUnique\(\{ where: \{ token \} \}\)/
+    )
+  })
+
+  it('the fallback is no longer reachable on a bare "!invite" alone — the old unconditional version is gone', () => {
+    expect(acceptSource).not.toMatch(/if \(!invite\) \{\s*invite = await prisma\.workspaceInvite\.findUnique\(\{ where: \{ token \} \}\)/)
+  })
+
+  it('the hashed lookup still runs first, unconditionally, before the gated fallback', () => {
+    const hashedIdx  = acceptSource.indexOf('token: hashInviteToken(token)')
+    const gatedIdx   = acceptSource.indexOf('!invite && !isModernInviteToken(token)')
+    expect(hashedIdx).toBeGreaterThan(-1)
+    expect(gatedIdx).toBeGreaterThan(-1)
+    expect(hashedIdx).toBeLessThan(gatedIdx)
   })
 })
 
@@ -430,13 +507,13 @@ describe('invite acceptance — token lookup and legacy compatibility (SOURCE-CO
     expect(acceptSource).toMatch(/findUnique\(\{\s*where:\s*\{ token: hashInviteToken\(token\) \},/)
   })
 
-  it('falls back to a raw lookup only when the hashed lookup misses, for pre-hardening rows', () => {
+  it('falls back to a raw lookup only when the hashed lookup misses AND the token is not modern-shaped (Stage 2B: prevents a stored hash from being replayed as a bearer token — see the isModernInviteToken describe block below)', () => {
     const hashIdx   = acceptSource.indexOf('hashInviteToken(token)')
     const legacyIdx = acceptSource.indexOf('findUnique({ where: { token } })')
     expect(hashIdx).toBeGreaterThan(-1)
     expect(legacyIdx).toBeGreaterThan(-1)
     expect(hashIdx).toBeLessThan(legacyIdx)
-    expect(acceptSource).toMatch(/if \(!invite\) \{\s*invite = await prisma\.workspaceInvite\.findUnique\(\{ where: \{ token \} \}\)/)
+    expect(acceptSource).toMatch(/if \(!invite && !isModernInviteToken\(token\)\) \{\s*invite = await prisma\.workspaceInvite\.findUnique\(\{ where: \{ token \} \}\)/)
   })
 
   it('rejects unknown, non-pending, and expired invitations before doing any work', () => {
