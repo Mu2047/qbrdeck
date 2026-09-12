@@ -193,14 +193,29 @@ describe('invite routes remain completely untouched by onboarding self-heal/enro
   })
 
   it('invite acceptance still adds the member and marks the invite accepted, with no onboarding write mixed into that transaction', () => {
-    expect(inviteAcceptRouteSource).toMatch(/prisma\.\$transaction\(\[/)
-    expect(inviteAcceptRouteSource).toMatch(/prisma\.workspaceMember\.create\(/)
-    expect(inviteAcceptRouteSource).toMatch(/prisma\.workspaceInvite\.update\(/)
+    // Stage 2 replaced the array-form transaction with an interactive one so
+    // the workspace row can be locked and current seat capacity re-checked
+    // before the write. The invariant this test guards is unchanged: one
+    // transaction, containing the membership create and the invite
+    // consumption, and no onboarding write mixed in.
+    expect(inviteAcceptRouteSource).toMatch(/prisma\.\$transaction\(async \(tx\) => \{/)
+    expect(inviteAcceptRouteSource).toMatch(/tx\.workspaceMember\.create\(/)
+    expect(inviteAcceptRouteSource).toMatch(/tx\.workspaceInvite\.updateMany\(/)
     expect(inviteAcceptRouteSource).not.toMatch(/workspaceOnboarding/)
   })
 
   it('invite acceptance never locks the User row — this is precisely why a race-loser membership cannot be assumed to be a bootstrap winner', () => {
-    expect(inviteAcceptRouteSource).not.toMatch(/FOR UPDATE/)
+    // Stage 2 added a Workspace-row lock (lockWorkspaceRow) to make seat
+    // capacity concurrency-safe. That does NOT weaken the reasoning this test
+    // protects, which is specifically about the User row: getWorkspaceContext's
+    // bootstrap path locks User, and invite acceptance still never does, so a
+    // membership observed by that path's locked re-check still cannot be
+    // assumed to be the competing bootstrap winner.
+    expect(inviteAcceptRouteSource).not.toMatch(/FROM "User"/)
+    expect(inviteAcceptRouteSource).not.toMatch(/lockUserRow/)
+    // The only lock it takes is the shared Workspace-row helper, and it never
+    // hand-rolls raw SQL of its own.
     expect(inviteAcceptRouteSource).not.toMatch(/\$queryRaw/)
+    expect(inviteAcceptRouteSource).toMatch(/lockWorkspaceRow\(tx, invite!\.workspaceId\)/)
   })
 })

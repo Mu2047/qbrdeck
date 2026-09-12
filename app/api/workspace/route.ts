@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceMembership } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
+import { getLimits } from '@/lib/limits'
 
 export async function GET() {
   try {
@@ -23,12 +24,39 @@ export async function GET() {
       orderBy: { createdAt: 'desc' },
     })
 
+    // Expiry is evaluated against expiresAt directly rather than trusting the
+    // stored status, which is only rewritten lazily. An expired invitation
+    // reserves no seat, so it must not be presented to the owner as active.
+    const now = new Date()
+    const decoratedInvites = invites.map(i => ({
+      id:        i.id,
+      email:     i.email,
+      role:      i.role,
+      status:    i.status,
+      createdAt: i.createdAt,
+      expiresAt: i.expiresAt,
+      expired:   i.expiresAt <= now,
+    }))
+
+    // Reserved capacity = active members + still-valid pending invitations, the
+    // same definition the invite route enforces. Surfacing only the member
+    // count here would tell an owner "3 / 5" while two pending invitations
+    // already hold the remaining seats.
+    const plan = membership.subscription?.plan ?? 'FREE'
+    const pendingInviteCount = decoratedInvites.filter(i => !i.expired).length
+
     return NextResponse.json({
       workspace: {
         id:   membership.workspaceId,
         name: membership.workspace.name,
       },
       currentRole: membership.role,
+      seats: {
+        members:        members.length,
+        pendingInvites: pendingInviteCount,
+        reserved:       members.length + pendingInviteCount,
+        limit:          getLimits(plan).teamSeats, // null = unlimited (Agency)
+      },
       members: members.map(m => ({
         id:       m.id,
         userId:   m.userId,
@@ -37,14 +65,7 @@ export async function GET() {
         role:     m.role,
         joinedAt: m.joinedAt,
       })),
-      invites: invites.map(i => ({
-        id:        i.id,
-        email:     i.email,
-        role:      i.role,
-        status:    i.status,
-        createdAt: i.createdAt,
-        expiresAt: i.expiresAt,
-      })),
+      invites: decoratedInvites,
     })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
