@@ -58,7 +58,7 @@ describe('generate-qbr route — legitimate QBR quota is preserved', () => {
   })
 
   it('a QBR-quota rejection still returns 403 LIMIT_REACHED with limit: \'qbrs\' and the existing plan/max shape', () => {
-    expect(routeSource).toMatch(/if \(!isUnderLimit\(qbrCount, limits\.qbrsPerMonth\)\) \{\s*return NextResponse\.json\(\s*\{ error: 'LIMIT_REACHED', limit: 'qbrs', plan, max: limits\.qbrsPerMonth \},\s*\{ status: 403 \}\s*\)/)
+    expect(routeSource).toMatch(/if \(reserveResult\.kind === 'limit_reached'\) \{\s*return NextResponse\.json\(\s*\{ error: 'LIMIT_REACHED', limit: 'qbrs', plan: reserveResult\.plan, max: reserveResult\.max \},\s*\{ status: 403 \}\s*\)/)
   })
 })
 
@@ -72,11 +72,114 @@ describe('generate-qbr route — plan/period logic remains intact', () => {
   })
 
   it('still resets qbrCount/exportCount/periodStart via shouldResetPeriod before computing qbrCount', () => {
-    const resetIdx = routeSource.indexOf('shouldResetPeriod(new Date(sub.periodStart))')
-    const qbrCountIdx = routeSource.indexOf('const qbrCount = sub?.qbrCount ?? 0')
+    const resetIdx = routeSource.indexOf('shouldResetPeriod(new Date(freshSub.periodStart))')
+    const qbrCountIdx = routeSource.indexOf('const qbrCount         = periodNeedsReset ? 0 : (freshSub?.qbrCount ?? 0)')
     expect(resetIdx).toBeGreaterThan(-1)
     expect(qbrCountIdx).toBeGreaterThan(-1)
     expect(resetIdx).toBeLessThan(qbrCountIdx)
+  })
+})
+
+describe('generate-qbr route — quota reservation is atomic and precedes the Anthropic call (D4B)', () => {
+  it('locks the Workspace row before re-reading the Subscription, inside prisma.$transaction', () => {
+    const txMatch = routeSource.match(/prisma\.\$transaction\(async \(tx\) => \{[\s\S]*?\n {4}\}\)/)
+    expect(txMatch).not.toBeNull()
+    const txBody = txMatch?.[0] ?? ''
+    const lockIdx = txBody.indexOf('lockWorkspaceRow(tx, membership.workspaceId)')
+    const subIdx  = txBody.indexOf('tx.subscription.findUnique(')
+    expect(lockIdx).toBeGreaterThan(-1)
+    expect(subIdx).toBeGreaterThan(-1)
+    expect(lockIdx).toBeLessThan(subIdx)
+  })
+
+  it('imports lockWorkspaceRow from lib/workspace-lock', () => {
+    expect(routeSource).toMatch(/import \{ lockWorkspaceRow \} from '@\/lib\/workspace-lock'/)
+  })
+
+  it('the quota transaction resolves and commits before generateQBRSlides is ever called', () => {
+    const txIdx = routeSource.indexOf('const reserveResult = await prisma.$transaction(')
+    const aiIdx = routeSource.indexOf('generateQBRSlides(')
+    expect(txIdx).toBeGreaterThan(-1)
+    expect(aiIdx).toBeGreaterThan(-1)
+    expect(txIdx).toBeLessThan(aiIdx)
+  })
+
+  it('no reservation transaction remains open across the Anthropic call — POST contains exactly one prisma.$transaction( call (the reservation), and it closes before generateQBRSlides is reached', () => {
+    const postMatch = routeSource.match(/export async function POST\(req: NextRequest\) \{[\s\S]*?\n\}(?:\n|$)/)
+    const postSource = postMatch?.[0] ?? ''
+    const txCount = (postSource.match(/prisma\.\$transaction\(/g) ?? []).length
+    expect(txCount).toBe(1)
+  })
+
+  it('reserves (increments) the quota unit inside the transaction, not after AI/QBR creation', () => {
+    const txMatch = routeSource.match(/const reserveResult = await prisma\.\$transaction\(async \(tx\) => \{[\s\S]*?\n {4}\}\)/)
+    const txBody = txMatch?.[0] ?? ''
+    expect(txBody).toMatch(/qbrCount: \{ increment: 1 \}/)
+    expect(txBody).toMatch(/tx\.subscription\.create\(/)
+  })
+
+  it('no bare (unlocked) prisma.subscription.update/create for qbrCount exists outside the tx client', () => {
+    expect(routeSource).not.toMatch(/prisma\.subscription\.update\(/)
+    expect(routeSource).not.toMatch(/prisma\.subscription\.create\(/)
+  })
+})
+
+describe('generate-qbr route — failed generation compensates the reservation, never leaves a permanent charge (D4B)', () => {
+  it('the catch block compensates the reservation only when one was actually made', () => {
+    const catchMatch = routeSource.match(/\} catch \(err: any\) \{[\s\S]*?\n  \}\n\}/)
+    const catchBody = catchMatch?.[0] ?? ''
+    expect(catchBody).toMatch(/if \(reservation\) \{\s*await compensateQbrReservation\(reservation\.workspaceId, reservation\.periodStart\)\s*\}/)
+  })
+
+  it('compensateQbrReservation re-locks the same Workspace row and only decrements — never creates or increments', () => {
+    const fnMatch = routeSource.match(/async function compensateQbrReservation\([\s\S]*?\n\}\n?$/)
+    expect(fnMatch).not.toBeNull()
+    const body = fnMatch?.[0] ?? ''
+    expect(body).toMatch(/lockWorkspaceRow\(tx, workspaceId\)/)
+    expect(body).toMatch(/qbrCount: \{ decrement: 1 \}/)
+    expect(body).not.toMatch(/increment/)
+    expect(body).not.toMatch(/\.create\(/)
+  })
+
+  it('compensation never decrements below zero and never crosses into a different (already-reset) billing period', () => {
+    const fnMatch = routeSource.match(/async function compensateQbrReservation\([\s\S]*?\n\}\n?$/)
+    const body = fnMatch?.[0] ?? ''
+    expect(body).toMatch(/if \(sub\.qbrCount <= 0\) return/)
+    expect(body).toMatch(/if \(sub\.periodStart\.getTime\(\) !== reservedPeriodStart\.getTime\(\)\) return/)
+  })
+
+  it('a compensation failure is swallowed (logged, not rethrown) so it never masks the original generation failure response', () => {
+    const fnMatch = routeSource.match(/async function compensateQbrReservation\([\s\S]*?\n\}\n?$/)
+    const body = fnMatch?.[0] ?? ''
+    expect(body).toMatch(/catch \(compErr\) \{\s*console\.error\('\[generate-qbr\] Quota compensation failed', compErr\)\s*\}/)
+  })
+
+  it('reservation is declared outside the try block so the catch handler can see it', () => {
+    const declIdx = routeSource.indexOf('let reservation: { workspaceId: string; periodStart: Date } | null = null')
+    const tryIdx  = routeSource.indexOf('try {')
+    expect(declIdx).toBeGreaterThan(-1)
+    expect(tryIdx).toBeGreaterThan(-1)
+    expect(declIdx).toBeLessThan(tryIdx)
+  })
+})
+
+describe('generate-qbr route — input-bound safeguard on the three AI prompt free-text fields (D4B)', () => {
+  it('ticketCategories, wins, and upsellOpportunities are each bounded to MAX_FREE_TEXT_LENGTH (2000) and remain optional', () => {
+    expect(routeSource).toMatch(/const MAX_FREE_TEXT_LENGTH = 2000/)
+    expect(routeSource).toMatch(/ticketCategories:\s*z\.string\(\)\.max\(MAX_FREE_TEXT_LENGTH\)\.optional\(\)/)
+    expect(routeSource).toMatch(/wins:\s*z\.string\(\)\.max\(MAX_FREE_TEXT_LENGTH\)\.optional\(\)/)
+    expect(routeSource).toMatch(/upsellOpportunities:\s*z\.string\(\)\.max\(MAX_FREE_TEXT_LENGTH\)\.optional\(\)/)
+  })
+
+  it('oversized input is rejected by schema.safeParse — before the Client lookup, quota reservation, or any Anthropic call', () => {
+    const parseIdx = routeSource.indexOf('const parsed = schema.safeParse(body)')
+    const clientIdx = routeSource.indexOf('const client = await prisma.client.findFirst(')
+    const txIdx = routeSource.indexOf('const reserveResult = await prisma.$transaction(')
+    const aiIdx = routeSource.indexOf('generateQBRSlides(')
+    expect(parseIdx).toBeGreaterThan(-1)
+    expect(parseIdx).toBeLessThan(clientIdx)
+    expect(parseIdx).toBeLessThan(txIdx)
+    expect(parseIdx).toBeLessThan(aiIdx)
   })
 })
 
