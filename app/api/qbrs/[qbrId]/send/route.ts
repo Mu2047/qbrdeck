@@ -5,6 +5,7 @@ import { sendQBREmail } from '@/lib/email'
 import { getWorkspaceMembership } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
 import { createShareLink, hashShareToken } from '@/lib/share-links'
+import { resolveBranding } from '@/lib/branding'
 export async function POST(req: NextRequest, { params }: { params: { qbrId: string } }) {
   try {
     const { userId: clerkId } = auth()
@@ -37,14 +38,21 @@ export async function POST(req: NextRequest, { params }: { params: { qbrId: stri
     const workspace = await prisma.workspace.findUnique({
       where: { id: membership.workspaceId },
     })
-    const mspName = workspace?.name ?? 'MI Secure Tech Solutions'
+
+    // Same source of truth already used by the authenticated view, PDF,
+    // PPTX, and public portal — never re-derive plan/branding logic here.
+    const branding = resolveBranding({
+      plan:          membership.subscription?.plan ?? 'FREE',
+      workspaceName: workspace?.name ?? 'QBR Deck',
+    })
 
     await sendQBREmail({
       to: email,
       clientName: qbr.client.name,
       quarter: qbr.quarter,
       year: qbr.year,
-      mspName,
+      branding,
+      logoUrl: workspace?.logoUrl,
       portalUrl,
     })
 

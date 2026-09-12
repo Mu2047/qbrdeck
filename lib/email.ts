@@ -1,4 +1,5 @@
 import { Resend, type CreateEmailResponse } from 'resend'
+import type { BrandingResult } from '@/lib/branding'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
@@ -9,21 +10,49 @@ const resend = new Resend(process.env.RESEND_API_KEY)
 // either one into a non-2xx response instead of silently "succeeding".
 const SEND_FAILURE_MESSAGE = 'Unable to send the email. Please try again.'
 
+// Minimal, local HTML-escaping for the one genuinely user-controlled string
+// this template interpolates as branding (the workspace/MSP name). Not a
+// general sanitizer — just enough to stop a workspace name containing
+// HTML-significant characters from breaking or injecting into the email markup.
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 export async function sendQBREmail({
   to,
   clientName,
   quarter,
   year,
-  mspName,
+  branding,
+  logoUrl,
   portalUrl,
 }: {
   to: string
   clientName: string
   quarter: string
   year: number
-  mspName: string
+  // Caller resolves this via resolveBranding() (lib/branding.ts) — the same
+  // single source of truth already used by the authenticated view, PDF,
+  // PPTX, and public portal. This route never re-derives plan/branding logic.
+  branding: BrandingResult
+  // workspace.logoUrl, passed straight through — only rendered when
+  // branding.isWhiteLabel is true; ignored otherwise.
+  logoUrl?: string | null
   portalUrl: string
 }) {
+  const brandFooter = branding.isWhiteLabel && branding.mspName
+    ? `Prepared by ${escapeHtml(branding.mspName)} · Confidential`
+    : 'Prepared with QBR Deck · Confidential'
+
+  const logoHtml = branding.isWhiteLabel && logoUrl
+    ? `<img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(branding.mspName ?? '')}" style="max-height:28px;max-width:160px;margin-bottom:8px;display:block;" />`
+    : ''
+
   let result: CreateEmailResponse
   try {
     result = await resend.emails.send({
@@ -82,9 +111,9 @@ export async function sendQBREmail({
                   <!-- Footer -->
                   <tr>
                     <td style="background:#f4f5f7;padding:24px 40px;border-top:1px solid #e5e7eb;">
+                      ${logoHtml}
                       <p style="margin:0;color:#9ca3af;font-size:12px;">
-                        Prepared by ${mspName} · Confidential<br/>
-                        Powered by QBR Deck
+                        ${brandFooter}${branding.showPoweredBy ? '<br/>Powered by QBR Deck' : ''}
                       </p>
                     </td>
                   </tr>
