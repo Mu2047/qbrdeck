@@ -1,6 +1,7 @@
 import { auth } from '@clerk/nextjs/server'
 import { prisma } from '@/lib/prisma'
 import { TeamRole, OnboardingStatus, OnboardingStep } from '@prisma/client'
+import { readActiveWorkspaceCookie } from '@/lib/active-workspace'
 
 export type WorkspaceContext = {
   workspaceId: string
@@ -30,6 +31,82 @@ export type WorkspaceContext = {
     currentStep: OnboardingStep | null
     onboardingOwnerUserId: string | null
   } | null
+}
+
+// Every membership the User actually holds, earliest joined first. Fetching
+// the whole list (never take: 1) is what makes active-workspace selection
+// possible: the activeWorkspaceId cookie is only ever a selector INTO this
+// authoritative, userId-scoped list — it can never name a workspace the user
+// doesn't belong to, because selectActiveMembership() can only return a row
+// that is actually present here.
+const MEMBERSHIP_INCLUDE = {
+  memberships: {
+    include: { workspace: { include: { subscription: true, onboarding: true } } },
+    orderBy: { joinedAt: 'asc' as const },
+  },
+}
+
+// Shared identity resolution for BOTH getWorkspaceContext() and
+// getWorkspaceMembership() — the one place a clerkId turns into a User row
+// plus that User's full membership list. Keeping this single means the two
+// exported functions cannot drift into resolving different workspaces for
+// the same request; they differ only in whether they may auto-create the
+// User row (getWorkspaceContext bootstraps on first sign-in; the plain
+// membership lookup used by ~50 already-authenticated API routes never
+// needs to, since a gated page will already have bootstrapped by the time
+// any of them run).
+async function loadUserWithMemberships(clerkId: string, opts: { autoCreate: boolean }) {
+  let user = await prisma.user.findUnique({
+    where: { clerkId },
+    include: MEMBERSHIP_INCLUDE,
+  })
+
+  if (!user && opts.autoCreate) {
+    const { currentUser } = await import('@clerk/nextjs/server')
+    const clerkUser = await currentUser()
+    if (!clerkUser) return null
+
+    const email = clerkUser.emailAddresses[0]?.emailAddress
+    if (!email) return null // never upsert on an empty email
+
+    user = await prisma.user.upsert({
+      where: { email },    // match the existing row by its unique email
+      update: { clerkId }, // reconcile: point the record at the current Clerk identity
+      create: {
+        clerkId,
+        email,
+        name: `${clerkUser.firstName ?? ''} ${clerkUser.lastName ?? ''}`.trim() || null,
+      },
+      include: MEMBERSHIP_INCLUDE,
+    })
+  }
+
+  return user
+}
+
+// The activeWorkspaceId cookie is a selector, never an authority: it is only
+// ever matched against memberships already proven (by the caller's query) to
+// belong to this exact userId. A forged, stale, or unknown workspace ID
+// simply fails to find() a match and falls through to the safe default —
+// the earliest-joined membership, i.e. today's only behavior — so a
+// single-workspace user is completely unaffected by this cookie existing or
+// not. Pure and exported (no cookies()/request access inside it) so the
+// resolution algorithm itself — not just its cookie-plumbing — gets real
+// executable unit tests. `memberships` must already be ordered earliest
+// joinedAt first; that ordering, not this function, is what defines the
+// fallback.
+export function selectActiveMembership<M extends { workspaceId: string }>(
+  memberships: M[],
+  activeWorkspaceId: string | null
+): M | null {
+  if (memberships.length === 0) return null
+
+  if (activeWorkspaceId) {
+    const match = memberships.find(m => m.workspaceId === activeWorkspaceId)
+    if (match) return match
+  }
+
+  return memberships[0]
 }
 
 // Shared context-building shape for both the fast existing-membership path
@@ -174,47 +251,12 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
   if (!clerkId) return null
 
   // Auto-create user record on first sign-in
-  let user = await prisma.user.findUnique({
-    where: { clerkId },
-    include: {
-      memberships: {
-        include: { workspace: { include: { subscription: true, onboarding: true } } },
-        orderBy: { joinedAt: 'asc' },
-        take: 1,
-      },
-    },
-  })
-
-  if (!user) {
-  const { currentUser } = await import('@clerk/nextjs/server')
-  const clerkUser = await currentUser()
-  if (!clerkUser) return null
-
-  const email = clerkUser.emailAddresses[0]?.emailAddress
-  if (!email) return null   // never upsert on an empty email
-
-  user = await prisma.user.upsert({
-    where: { email },                 // match the existing row by its unique email
-    update: { clerkId },              // reconcile: point the record at the current Clerk identity
-    create: {
-      clerkId,
-      email,
-      name: `${clerkUser.firstName ?? ''} ${clerkUser.lastName ?? ''}`.trim() || null,
-    },
-    include: {
-      memberships: {
-        include: { workspace: { include: { subscription: true, onboarding: true } } },
-        orderBy: { joinedAt: 'asc' },
-        take: 1,
-      },
-    },
-  })
-}
-
+  const user = await loadUserWithMemberships(clerkId, { autoCreate: true })
   if (!user) return null
 
-  if (user.memberships.length > 0) {
-    return resolveExistingMembership(user.id, user.memberships[0])
+  const activeMembership = selectActiveMembership(user.memberships, readActiveWorkspaceCookie())
+  if (activeMembership) {
+    return resolveExistingMembership(user.id, activeMembership)
   }
 
   // Zero memberships observed on the fast-path read above. This alone must
@@ -346,21 +388,19 @@ export async function getWorkspaceContext(): Promise<WorkspaceContext | null> {
   return buildWorkspaceContext(userId, 'OWNER', slowPathResult.workspace, slowPathResult.workspace.onboarding)
 }
 
+// Read-only membership lookup used by already-authenticated API routes
+// (never bootstraps a User/Workspace — by the time any of these run, a
+// gated page has already done that via getWorkspaceContext). Shares
+// loadUserWithMemberships() and selectActiveMembership() with
+// getWorkspaceContext() above so the two can never resolve different
+// workspaces for the same request/cookie/DB state.
 export async function getWorkspaceMembership(clerkId: string) {
-  const user = await prisma.user.findUnique({
-    where: { clerkId },
-    include: {
-      memberships: {
-        include: { workspace: { include: { subscription: true } } },
-        orderBy: { joinedAt: 'asc' },
-        take: 1,
-      },
-    },
-  })
+  const user = await loadUserWithMemberships(clerkId, { autoCreate: false })
+  if (!user) return null
 
-  if (!user || user.memberships.length === 0) return null
+  const membership = selectActiveMembership(user.memberships, readActiveWorkspaceCookie())
+  if (!membership) return null
 
-  const membership = user.memberships[0]
   return {
     userId:      user.id,
     user,

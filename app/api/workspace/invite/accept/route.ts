@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { lockWorkspaceRow } from '@/lib/workspace-lock'
 import { countReservedSeats, fitsWithinSeatLimit, hashInviteToken, isModernInviteToken } from '@/lib/team-invites'
+import { setActiveWorkspaceCookie } from '@/lib/active-workspace'
 
 // Thrown only for the one legitimate concurrency race this endpoint must
 // detect: the conditional PENDING -> ACCEPTED claim lost to a simultaneous
@@ -125,7 +126,13 @@ export async function POST(req: NextRequest) {
         error: 'This workspace has no available seats. Please ask the workspace owner to free a seat or upgrade the plan.',
       }, { status: 403 })
 
-    return NextResponse.json({ success: true, workspaceId: result.workspaceId })
+    // Cookie is set only on this one success path — never on an error
+    // response above, and never before the transaction has actually
+    // committed the membership. A rejected/failed acceptance must leave
+    // whatever workspace was already active untouched.
+    const response = NextResponse.json({ success: true, workspaceId: result.workspaceId })
+    setActiveWorkspaceCookie(response, result.workspaceId)
+    return response
   } catch (err: any) {
     if (err instanceof InviteClaimLostError) {
       return NextResponse.json({ error: 'This invitation has already been used or revoked' }, { status: 400 })

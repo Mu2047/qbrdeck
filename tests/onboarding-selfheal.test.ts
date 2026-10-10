@@ -131,12 +131,20 @@ describe('lib/workspace.ts — resolveExistingMembership: self-heal failure is n
 
 describe('lib/workspace.ts — both the fast path and the slow-path race-loser resolve through the SAME resolver', () => {
   it('the fast existing-membership path delegates directly to resolveExistingMembership — no inline self-heal duplicated there', () => {
+    // Stage 2G1: the fast path now selects the ACTIVE membership (cookie,
+    // verified against this user's real memberships, falling back to
+    // earliest-joined) rather than always taking the earliest unconditionally
+    // — see selectActiveMembership() and tests/active-workspace-foundation.
+    // test.ts for that resolution contract. The invariant this test exists to
+    // prove is unchanged: whichever membership is selected, the fast path
+    // still delegates straight to resolveExistingMembership and never
+    // duplicates its self-heal upsert inline.
     const fastPathMatch = workspaceSource.match(
-      /if \(user\.memberships\.length > 0\) \{([\s\S]*?)\n  \}/
+      /if \(activeMembership\) \{([\s\S]*?)\n  \}/
     )
     const fastPathBody = fastPathMatch?.[1] ?? ''
     expect(fastPathMatch).not.toBeNull()
-    expect(fastPathBody).toMatch(/return resolveExistingMembership\(user\.id, user\.memberships\[0\]\)/)
+    expect(fastPathBody).toMatch(/return resolveExistingMembership\(user\.id, activeMembership\)/)
     expect(fastPathBody).not.toMatch(/workspaceOnboarding\.upsert/)
   })
 

@@ -25,8 +25,14 @@ function readSourceLF(relativePath: string): string {
 const workspaceSource = readSourceLF('lib/workspace.ts')
 
 // The fast existing-membership path: from its `if` down to the start of the
-// zero-membership slow path.
-const fastPathIdx = workspaceSource.indexOf('if (user.memberships.length > 0) {')
+// zero-membership slow path. Stage 2G1 changed the condition from an
+// unconditional "earliest membership" check to a selected activeMembership
+// (see selectActiveMembership() in lib/workspace.ts and
+// tests/active-workspace-foundation.test.ts for that contract) — the anchor
+// below tracks that rename; the invariants this file checks (no transaction/
+// lock/raw-query in the fast path, no duplicated inline upsert) are otherwise
+// unaffected by which membership ends up selected.
+const fastPathIdx = workspaceSource.indexOf('if (activeMembership) {')
 const slowPathIdx = workspaceSource.indexOf('// Zero memberships observed')
 const fastPathBlock = workspaceSource.slice(fastPathIdx, slowPathIdx)
 
@@ -49,7 +55,7 @@ describe('lib/workspace.ts — fast path is untouched by the concurrency fix', (
   })
 
   it('the fast path delegates to the shared self-heal-aware resolveExistingMembership — no inline upsert duplicated here (see tests/onboarding-selfheal.test.ts for the resolver contract itself)', () => {
-    expect(fastPathBlock).toMatch(/return resolveExistingMembership\(user\.id, user\.memberships\[0\]\)/)
+    expect(fastPathBlock).toMatch(/return resolveExistingMembership\(user\.id, activeMembership\)/)
     expect(fastPathBlock).not.toMatch(/workspaceOnboarding\.upsert/)
   })
 })
