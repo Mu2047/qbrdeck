@@ -101,11 +101,18 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex min-h-screen bg-gray-50">
+    // h-screen (not min-h-screen) caps this row at exactly the viewport
+    // height instead of letting it grow taller when main content is tall.
+    // Without that cap, <main>'s overflow-auto has no bounded height to
+    // scroll within, so tall page content grows the whole row — and the
+    // sidebar, stretching by default to match the row's height — right
+    // along with it, pushing the switcher/Account footer far down the page
+    // instead of keeping them pinned in view.
+    <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
-      <aside className="w-60 flex-shrink-0 bg-navy-800 flex flex-col">
+      <aside className="w-60 h-screen flex-shrink-0 bg-navy-800 flex flex-col">
         {/* Logo */}
-        <div className="h-16 flex items-center px-5 border-b border-white/10">
+        <div className="h-16 shrink-0 flex items-center px-5 border-b border-white/10">
           <div className="flex items-center gap-2.5">
             <div className="w-7 h-7 bg-gold-500 rounded-md flex items-center justify-center">
               <FileText size={14} className="text-white" />
@@ -117,8 +124,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
-        {/* Nav */}
-        <nav className="flex-1 px-3 py-4 space-y-1">
+        {/* Nav — min-h-0 is required alongside flex-1: a flex item's default
+            min-height is "auto" (at least its content's natural height),
+            which on its own would silently block overflow-y-auto from ever
+            engaging. With it, nav scrolls internally on a short viewport
+            instead of pushing the switcher/Account footer below it. */}
+        <nav className="flex-1 min-h-0 overflow-y-auto px-3 py-4 space-y-1">
           {NAV.map(({ href, icon: Icon, label }) => {
             const active = path === href || (href !== '/dashboard' && path.startsWith(href))
             return (
@@ -139,9 +150,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </nav>
 
         {/* Workspace switcher — only ever rendered once 2+ memberships are
-            confirmed, so a single-workspace user sees no selector at all. */}
+            confirmed, so a single-workspace user sees no selector at all,
+            and no empty gap either (the conditional renders nothing). */}
         {workspaces.length > 1 && (
-          <div className="px-4 pt-3">
+          <div className="px-4 pt-3 shrink-0">
             <label htmlFor="workspace-switcher" className="sr-only">Switch workspace</label>
             <select
               id="workspace-switcher"
@@ -163,7 +175,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         )}
 
         {/* User */}
-        <div className="p-4 border-t border-white/10 flex items-center gap-3">
+        <div className="p-4 shrink-0 border-t border-white/10 flex items-center gap-3">
           <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: 'w-8 h-8' } }} />
           <div className="text-white/60 text-xs">Account</div>
         </div>
