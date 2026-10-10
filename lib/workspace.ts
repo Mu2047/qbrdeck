@@ -410,3 +410,50 @@ export async function getWorkspaceMembership(clerkId: string) {
     subscription: membership.workspace.subscription,
   }
 }
+
+export type WorkspaceListEntry = {
+  workspaceId: string
+  name: string
+  role: TeamRole
+  active: boolean
+}
+
+// Pure builder: the switcher's only data need, given memberships already
+// fetched for exactly one user. Never reads a workspace it wasn't handed —
+// no I/O, no global state, so two different users' membership arrays can
+// never influence each other's result; same input always gives the same
+// output. Exported (alongside selectActiveMembership) so this shaping logic
+// gets real executable unit tests, not just a DB-backed one. `memberships`
+// must already be the earliest-joined-first list (same precondition as
+// selectActiveMembership); `activeId` is typically the already-selected
+// active membership's workspaceId.
+export function buildWorkspaceList<
+  M extends { workspaceId: string; role: TeamRole; workspace: { name: string } }
+>(memberships: M[], activeId: string | null): WorkspaceListEntry[] {
+  const ordered = activeId
+    ? [
+        ...memberships.filter(m => m.workspaceId === activeId),
+        ...memberships.filter(m => m.workspaceId !== activeId),
+      ]
+    : memberships
+
+  return ordered.map(m => ({
+    workspaceId: m.workspaceId,
+    name:        m.workspace.name,
+    role:        m.role,
+    active:      m.workspaceId === activeId,
+  }))
+}
+
+// The switcher's DB-fetching wrapper: never exposes slug/logoUrl/
+// subscription/onboarding, which the switcher has no business seeing.
+// Shares loadUserWithMemberships()/selectActiveMembership() with
+// getWorkspaceContext()/getWorkspaceMembership() so "which workspace is
+// active" can never disagree between the switcher and the rest of the app.
+export async function listUserWorkspaces(clerkId: string): Promise<WorkspaceListEntry[]> {
+  const user = await loadUserWithMemberships(clerkId, { autoCreate: false })
+  if (!user) return []
+
+  const active = selectActiveMembership(user.memberships, readActiveWorkspaceCookie())
+  return buildWorkspaceList(user.memberships, active?.workspaceId ?? null)
+}

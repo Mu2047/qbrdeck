@@ -1,7 +1,8 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { UserButton } from '@clerk/nextjs'
 import { LayoutDashboard, Users, Settings, CreditCard, FileText, BarChart2 } from 'lucide-react'
 
@@ -13,8 +14,61 @@ const NAV = [
   { href: '/dashboard/settings',  icon: Settings,        label: 'Settings'  },
 ]
 
+const ROLE_LABEL: Record<string, string> = {
+  OWNER: 'Owner', ADMIN: 'Admin', MEMBER: 'Member', VIEWER: 'Viewer',
+}
+
+type WorkspaceOption = { workspaceId: string; name: string; role: string; active: boolean }
+
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const path = usePathname()
+  const router = useRouter()
+
+  // Switcher data — fetched client-side (same convention as Settings/
+  // Billing elsewhere in app/(app)), not prop-drilled from a server
+  // component. A single-workspace user never sees more than an empty list
+  // resolve to "show nothing" below, so this has no visible effect for them
+  // beyond one extra lightweight request.
+  const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([])
+  const [switching, setSwitching] = useState(false)
+  const [switchError, setSwitchError] = useState('')
+
+  useEffect(() => {
+    fetch('/api/workspace/active')
+      .then(r => r.json())
+      .then(data => setWorkspaces(data.workspaces ?? []))
+      .catch(() => {})
+  }, [])
+
+  const activeWorkspaceId = workspaces.find(w => w.active)?.workspaceId ?? ''
+
+  async function switchWorkspace(workspaceId: string) {
+    if (!workspaceId || workspaceId === activeWorkspaceId) return
+    setSwitching(true)
+    setSwitchError('')
+    try {
+      const res = await fetch('/api/workspace/active', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId }),
+      })
+      const data = await res.json()
+      if (!res.ok || data.error) {
+        setSwitchError(data.error ?? 'Could not switch workspace.')
+        setSwitching(false)
+        return
+      }
+      // Navigate to the dashboard root — a nested page (e.g. a specific
+      // client) may not exist in the newly active workspace — then refresh
+      // so every server-rendered workspace-scoped value re-fetches under
+      // the new cookie.
+      router.push('/dashboard')
+      router.refresh()
+    } catch {
+      setSwitchError('Could not switch workspace.')
+      setSwitching(false)
+    }
+  }
 
   return (
     <div className="flex min-h-screen bg-gray-50">
@@ -53,6 +107,30 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             )
           })}
         </nav>
+
+        {/* Workspace switcher — only ever rendered once 2+ memberships are
+            confirmed, so a single-workspace user sees no selector at all. */}
+        {workspaces.length > 1 && (
+          <div className="px-4 pt-3">
+            <label htmlFor="workspace-switcher" className="sr-only">Switch workspace</label>
+            <select
+              id="workspace-switcher"
+              className="w-full bg-white/10 text-white text-xs rounded-lg px-2 py-2 border border-white/10 disabled:opacity-60"
+              value={activeWorkspaceId}
+              disabled={switching}
+              onChange={e => switchWorkspace(e.target.value)}
+            >
+              {workspaces.map(w => (
+                <option key={w.workspaceId} value={w.workspaceId} className="text-navy-800">
+                  {w.name} — {ROLE_LABEL[w.role] ?? w.role}
+                </option>
+              ))}
+            </select>
+            {switchError && (
+              <p className="text-red-300 text-[11px] mt-1">{switchError}</p>
+            )}
+          </div>
+        )}
 
         {/* User */}
         <div className="p-4 border-t border-white/10 flex items-center gap-3">
