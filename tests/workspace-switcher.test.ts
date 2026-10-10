@@ -177,7 +177,11 @@ describe('switcher UI — single vs multi-workspace rendering (SOURCE-CONTRACT, 
   })
 
   it('fetches the workspace list from the shared switch/list endpoint', () => {
-    expect(appLayoutSource).toContain("fetch('/api/workspace/active')")
+    // Stage 2G2C added explicit credentials/cache options and an auth-ready
+    // gate to this same call (see tests/workspace-switcher-render.test.ts for
+    // that fix's own coverage) — this assertion only cares that the GET call
+    // still targets the right endpoint.
+    expect(appLayoutSource).toContain("fetch('/api/workspace/active'")
   })
 
   it('uses a plain native <select> — no new UI/dropdown library introduced', () => {

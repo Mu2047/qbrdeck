@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { UserButton } from '@clerk/nextjs'
+import { UserButton, useAuth } from '@clerk/nextjs'
 import { LayoutDashboard, Users, Settings, CreditCard, FileText, BarChart2 } from 'lucide-react'
 
 const NAV = [
@@ -23,6 +23,7 @@ type WorkspaceOption = { workspaceId: string; name: string; role: string; active
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const path = usePathname()
   const router = useRouter()
+  const { isLoaded, isSignedIn } = useAuth()
 
   // Switcher data — fetched client-side (same convention as Settings/
   // Billing elsewhere in app/(app)), not prop-drilled from a server
@@ -34,11 +35,40 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [switchError, setSwitchError] = useState('')
 
   useEffect(() => {
-    fetch('/api/workspace/active')
-      .then(r => r.json())
-      .then(data => setWorkspaces(data.workspaces ?? []))
-      .catch(() => {})
-  }, [])
+    // Wait for Clerk to resolve the signed-in state before asking the
+    // server for anything. This is a client-side readiness gate only — the
+    // server route still independently re-checks auth() itself; this never
+    // substitutes for that. Without it, the request could fire during the
+    // brief window before ClerkJS finishes hydrating, race to a non-200
+    // response, and — since this effect used to run exactly once with no
+    // dependencies — never get a second chance to try again.
+    if (!isLoaded || !isSignedIn) return
+
+    let cancelled = false
+
+    fetch('/api/workspace/active', { credentials: 'same-origin', cache: 'no-store' })
+      .then(res => {
+        // fetch() only rejects on a network failure — an HTTP error status
+        // with a valid JSON body (e.g. a 401) resolves normally, so without
+        // this check a non-200 response was silently parsed as if it were
+        // success and quietly produced an empty workspace list forever.
+        if (!res.ok) throw new Error(`workspace list request failed: ${res.status}`)
+        return res.json()
+      })
+      .then(data => {
+        if (!cancelled) setWorkspaces(data.workspaces ?? [])
+      })
+      .catch(() => {
+        // Non-fatal: the switcher just stays hidden, identical to a
+        // single-workspace user — never a broken/partial selector, never a
+        // crashed layout, and nothing sensitive surfaced. If isLoaded/
+        // isSignedIn later change (e.g. a sign-out/sign-in within the same
+        // tab), the effect re-runs and gets a fresh chance.
+        if (!cancelled) setWorkspaces([])
+      })
+
+    return () => { cancelled = true }
+  }, [isLoaded, isSignedIn])
 
   const activeWorkspaceId = workspaces.find(w => w.active)?.workspaceId ?? ''
 
