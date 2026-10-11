@@ -165,6 +165,11 @@ export default function SettingsPage() {
   }
 
   const isOwner = currentRole === 'OWNER'
+  // Mirrors can.inviteMembers (ADMIN+) in lib/permissions.ts, which the invite
+  // API enforces for both sending and revoking. Kept inline rather than
+  // imported because that module pulls in @prisma/client. Role changes,
+  // member removal and billing stay Owner-only (isOwner).
+  const canInvite = currentRole === 'OWNER' || currentRole === 'ADMIN'
 
   return (
     <div className="p-8 max-w-2xl">
@@ -299,8 +304,8 @@ export default function SettingsPage() {
       {activeTab === 'team' && (
         <div className="space-y-6">
 
-          {/* Invite form — Owner only */}
-          {isOwner && (
+          {/* Invite form — Owner and Admin */}
+          {canInvite && (
             <div className="card p-6">
               <h2 className="text-sm font-semibold text-navy-800 mb-4 flex items-center gap-2">
                 <Mail size={15} className="text-gray-400" /> Invite team member
@@ -308,8 +313,15 @@ export default function SettingsPage() {
               {(plan === 'FREE' || plan === 'SOLO') ? (
                 <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
                   <p className="text-sm text-amber-800 font-medium">Team access requires Growth plan</p>
-                  <p className="text-sm text-amber-700 mt-1">Upgrade to invite team members and collaborate on client QBRs.</p>
-                  <a href="/dashboard/billing" className="text-sm font-medium text-amber-900 underline mt-2 inline-block">Upgrade to Growth →</a>
+                  {/* Billing is Owner-only, so an Admin gets no upgrade action. */}
+                  {isOwner ? (
+                    <>
+                      <p className="text-sm text-amber-700 mt-1">Upgrade to invite team members and collaborate on client QBRs.</p>
+                      <a href="/dashboard/billing" className="text-sm font-medium text-amber-900 underline mt-2 inline-block">Upgrade to Growth →</a>
+                    </>
+                  ) : (
+                    <p className="text-sm text-amber-700 mt-1">Ask your workspace Owner to upgrade to Growth.</p>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -410,7 +422,7 @@ export default function SettingsPage() {
                       ) : (
                         <span className="text-xs px-2 py-1 rounded-full bg-amber-50 text-amber-600 font-medium">Pending</span>
                       )}
-                      {isOwner && (
+                      {canInvite && (
                         <button onClick={() => revokeInvite(inv.id)} className="text-gray-300 hover:text-red-500 transition-colors">
                           <Trash2 size={14} />
                         </button>
