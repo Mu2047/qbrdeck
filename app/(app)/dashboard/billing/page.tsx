@@ -4,6 +4,7 @@ import { PLANS } from '@/lib/stripe'
 import { PLAN_LIMITS, formatLimit } from '@/lib/limits'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceContext } from '@/lib/workspace'
+import { can } from '@/lib/permissions'
 import { Check, Zap } from 'lucide-react'
 import { BillingButton } from './billing-button'
 
@@ -17,6 +18,11 @@ export default async function BillingPage() {
   const currentPlan = (ctx.subscription?.plan ?? 'FREE') as keyof typeof PLANS
   const sub         = ctx.subscription
   const limits      = PLAN_LIMITS[currentPlan]
+
+  // Same Owner-only check the checkout and portal routes enforce, on the role
+  // in the ACTIVE workspace. Everyone sees plan and usage; only an Owner gets
+  // the controls that start a checkout or open the Stripe portal.
+  const canManageBilling = can.manageBilling(ctx.member.role)
 
   // ── Live usage counters ───────────────────────────────────────────────────
   const workspaceId  = ctx.workspaceId
@@ -136,14 +142,26 @@ export default async function BillingPage() {
                   </li>
                 ))}
               </ul>
-              <BillingButton planKey={planKey} isCurrent={isCurrent} priceId={plan.priceId ?? null} />
+              {canManageBilling ? (
+                <BillingButton planKey={planKey} isCurrent={isCurrent} priceId={plan.priceId ?? null} />
+              ) : isCurrent ? (
+                <button disabled className="btn-secondary w-full justify-center opacity-50 cursor-not-allowed">
+                  Current plan
+                </button>
+              ) : null}
             </div>
           )
         })}
       </div>
 
+      {!canManageBilling && (
+        <p className="text-gray-500 text-sm mt-6">
+          Only the workspace Owner can change the plan or manage the subscription.
+        </p>
+      )}
+
       {/* ── Manage subscription ───────────────────────────────────────────────── */}
-      {sub?.stripeSubscriptionId && (
+      {canManageBilling && sub?.stripeSubscriptionId && (
         <div className="mt-8 p-4 card flex items-center justify-between">
           <div>
             <p className="text-sm font-medium text-navy-800">Manage subscription</p>
