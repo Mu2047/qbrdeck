@@ -262,7 +262,11 @@ export default function SettingsPage() {
             ) : (
               <div className="space-y-3">
                 <p className="text-sm text-gray-500">Remove QBR Deck branding and replace with your own logo and company name.</p>
-                <a href="/dashboard/billing" className="btn-primary text-sm py-2 px-4 inline-block">Upgrade to Growth</a>
+                {isOwner ? (
+                  <a href="/dashboard/billing" className="btn-primary text-sm py-2 px-4 inline-block">Upgrade to Growth</a>
+                ) : (
+                  <p className="text-sm text-gray-500">Ask your workspace Owner to upgrade to Growth.</p>
+                )}
               </div>
             )}
           </div>
