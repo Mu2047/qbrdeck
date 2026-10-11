@@ -1,12 +1,14 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { createContext, useContext, useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ArrowLeft, Download, FileText, Check, Loader2, Share2, Copy, Mail, Trash2 } from 'lucide-react'
 import { healthCardLabel, isHealthScoreMetric, statusToColor, type HealthStatus } from '@/lib/health-score'
 import { requestJson, type ApiResult } from '@/lib/api-client'
 import { SerializedLatestQueue } from '@/lib/serialized-latest-queue'
+import { can } from '@/lib/permissions'
+import { useActiveRole } from '@/lib/use-active-role'
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
 
@@ -27,6 +29,10 @@ function resolveSendResult(result: ApiResult<{ success: boolean }>): {
     error: result.ok ? 'The email could not be sent. Please try again.' : result.error,
   }
 }
+
+// Whether EditableText may enter edit mode. Provided once around the slides
+// so every call site inherits it; defaults to read-only (fail closed).
+const CanEditQBRContext = createContext(false)
 
 const SAVE_FAILURE_MESSAGE = 'Your latest changes were not saved. Please retry.'
 
@@ -60,6 +66,14 @@ const HEALTH_STATUS_CLASSES: Record<ReturnType<typeof statusToColor>, { card: st
 
 export default function QBRPage({ params }: { params: { id: string; qbrId: string } }) {
   const router = useRouter()
+  // Controls follow the same can.* checks the API enforces, on the role in the
+  // ACTIVE workspace: PATCH (edit) needs generateQBR, send/share/PDF/PPTX need
+  // exportQBR, DELETE needs deleteQBR. Until the role is known (or if it can't
+  // be loaded) every gated control stays hidden and content is read-only.
+  const role         = useActiveRole()
+  const canEditQBR   = role !== null && can.generateQBR(role)
+  const canExportQBR = role !== null && can.exportQBR(role)
+  const canDeleteQBR = role !== null && can.deleteQBR(role)
   const [qbr, setQbr]                   = useState<any>(null)
   // ── Raw vs. resolved slide state ─────────────────────────────────────────
   // rawSlides: the raw, placeholder-bearing slides exactly as stored in the
@@ -583,33 +597,35 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
       </div>
 
       {/* ── Export bar ── */}
-      <div className="card p-4 mb-6 flex items-center justify-between">
-        <p className="text-sm text-gray-600">Export this QBR to share with your client.</p>
-        <div className="flex gap-3">
-          <button onClick={() => setShowEmailInput(v => !v)} disabled={sending} className="btn-secondary text-sm py-2">
-            <Mail size={14} /> Send to Client
-          </button>
-          <button
-            onClick={shareQBR}
-            disabled={sharing || copyingShareUrl}
-            aria-busy={sharing || copyingShareUrl}
-            aria-label="Share Link"
-            className="btn-secondary text-sm py-2"
-          >
-            {sharing
-              ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-              : copied
-              ? <><Check size={14} className="text-green-500" aria-hidden="true" /> Copied!</>
-              : <><Share2 size={14} aria-hidden="true" /> Share Link</>}
-          </button>
-          <button onClick={() => exportFile('pdf')} disabled={!!exporting} className="btn-secondary text-sm py-2">
-            {exporting === 'pdf' ? 'Exporting...' : <><Download size={14} /> PDF</>}
-          </button>
-          <button onClick={() => exportFile('pptx')} disabled={!!exporting} className="btn-primary text-sm py-2">
-            {exporting === 'pptx' ? 'Exporting...' : <><FileText size={14} /> PowerPoint</>}
-          </button>
+      {canExportQBR && (
+        <div className="card p-4 mb-6 flex items-center justify-between">
+          <p className="text-sm text-gray-600">Export this QBR to share with your client.</p>
+          <div className="flex gap-3">
+            <button onClick={() => setShowEmailInput(v => !v)} disabled={sending} className="btn-secondary text-sm py-2">
+              <Mail size={14} /> Send to Client
+            </button>
+            <button
+              onClick={shareQBR}
+              disabled={sharing || copyingShareUrl}
+              aria-busy={sharing || copyingShareUrl}
+              aria-label="Share Link"
+              className="btn-secondary text-sm py-2"
+            >
+              {sharing
+                ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                : copied
+                ? <><Check size={14} className="text-green-500" aria-hidden="true" /> Copied!</>
+                : <><Share2 size={14} aria-hidden="true" /> Share Link</>}
+            </button>
+            <button onClick={() => exportFile('pdf')} disabled={!!exporting} className="btn-secondary text-sm py-2">
+              {exporting === 'pdf' ? 'Exporting...' : <><Download size={14} /> PDF</>}
+            </button>
+            <button onClick={() => exportFile('pptx')} disabled={!!exporting} className="btn-primary text-sm py-2">
+              {exporting === 'pptx' ? 'Exporting...' : <><FileText size={14} /> PowerPoint</>}
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ── Send status — accessible, and rendered outside the email panel so
           it persists (and stays announced) even after the panel closes on
@@ -695,224 +711,239 @@ export default function QBRPage({ params }: { params: { id: string; qbrId: strin
       )}
 
       {/* ── Edit hint ── */}
-      <p className="text-xs text-gray-400 mb-4 italic">
-        Click any text to edit. Changes save automatically.
-      </p>
+      {canEditQBR && (
+        <p className="text-xs text-gray-400 mb-4 italic">
+          Click any text to edit. Changes save automatically.
+        </p>
+      )}
 
       {/* ── Slides ── */}
-      {resolvedSlides.map((slide: any, i: number) => (
-        <div key={i} className="card mb-4 overflow-hidden">
+      <CanEditQBRContext.Provider value={canEditQBR}>
+        {resolvedSlides.map((slide: any, i: number) => (
+          <div key={i} className="card mb-4 overflow-hidden">
 
-          {/* Slide header */}
-          <div className="bg-navy-800 px-6 py-3 flex items-center justify-between">
-            <p className="text-white text-sm font-medium">{slide.title}</p>
-            <span className="text-white/40 text-xs">Slide {i + 2}</span>
-          </div>
+            {/* Slide header */}
+            <div className="bg-navy-800 px-6 py-3 flex items-center justify-between">
+              <p className="text-white text-sm font-medium">{slide.title}</p>
+              <span className="text-white/40 text-xs">Slide {i + 2}</span>
+            </div>
 
-          <div className="p-6">
+            <div className="p-6">
 
-            {/* Content paragraph */}
-            <EditableText
-              value={slide.content}
-              onSave={val => updateContent(i, val)}
-              multiline
-              className="text-gray-600 text-sm leading-relaxed mb-4"
-            />
+              {/* Content paragraph */}
+              <EditableText
+                value={slide.content}
+                onSave={val => updateContent(i, val)}
+                multiline
+                className="text-gray-600 text-sm leading-relaxed mb-4"
+              />
 
-            {/* Metrics */}
-            {slide.type === 'metrics' && slide.metrics && (
-              <div className="grid grid-cols-3 gap-3">
-                {slide.metrics.map((m: any, j: number) => {
-                  // Health-score card: deterministic label + color from the
-                  // stored qbr.healthStatus, same treatment as SlideBody
-                  // (portal/preview) — see lib/health-score.ts healthCardLabel().
-                  // Falls back to the standard good/caution/risk styling if
-                  // qbr.healthStatus is unavailable or unrecognized.
-                  const isHealthCard = isHealthScoreMetric(m.label)
-                  const healthColorFamily = isHealthCard && qbr.healthStatus
-                    ? statusToColor(qbr.healthStatus as HealthStatus)
-                    : undefined
-                  const healthClasses = healthColorFamily ? HEALTH_STATUS_CLASSES[healthColorFamily] : undefined
+              {/* Metrics */}
+              {slide.type === 'metrics' && slide.metrics && (
+                <div className="grid grid-cols-3 gap-3">
+                  {slide.metrics.map((m: any, j: number) => {
+                    // Health-score card: deterministic label + color from the
+                    // stored qbr.healthStatus, same treatment as SlideBody
+                    // (portal/preview) — see lib/health-score.ts healthCardLabel().
+                    // Falls back to the standard good/caution/risk styling if
+                    // qbr.healthStatus is unavailable or unrecognized.
+                    const isHealthCard = isHealthScoreMetric(m.label)
+                    const healthColorFamily = isHealthCard && qbr.healthStatus
+                      ? statusToColor(qbr.healthStatus as HealthStatus)
+                      : undefined
+                    const healthClasses = healthColorFamily ? HEALTH_STATUS_CLASSES[healthColorFamily] : undefined
 
-                  const cardClasses = healthClasses ? healthClasses.card : (
-                    m.status === 'good'    ? 'bg-green-50 border-green-200' :
-                    m.status === 'caution' ? 'bg-amber-50 border-amber-200' :
-                                            'bg-red-50 border-red-200')
+                    const cardClasses = healthClasses ? healthClasses.card : (
+                      m.status === 'good'    ? 'bg-green-50 border-green-200' :
+                      m.status === 'caution' ? 'bg-amber-50 border-amber-200' :
+                                              'bg-red-50 border-red-200')
 
-                  return (
-                    <div key={j} className={`rounded-lg p-3.5 border ${cardClasses}`}>
-                      {/* Health-score card: label is also deterministic/read-only,
-                          same reasoning as the status below — it must always match
-                          qbr.healthScore/healthStatus, never an independently
-                          editable copy that could drift from the authoritative
-                          value shown on the cover card above. Non-health cards
-                          keep their existing editable label. */}
-                      {healthClasses ? (
-                        <p className="text-xs text-gray-500 mb-1">{m.label}</p>
-                      ) : (
-                        <EditableText
-                          value={m.label}
-                          onSave={val => updateMetric(i, j, 'label', val)}
-                          className="text-xs text-gray-500 mb-1 block"
-                        />
-                      )}
-                      {/* Metric value is read-only for every card, health and
-                          non-health alike — it is presentation copy of data
-                          sourced from qbr fields (ticket counts, uptime, etc.)
-                          or the health score, and editing only this display
-                          string would let it silently diverge from the
-                          authoritative source without changing anything it is
-                          meant to represent. */}
-                      <p className="text-xl font-bold text-navy-800 mb-1">{m.value}</p>
-                      {/* Health-score card: deterministic, read-only status —
-                          the AI-authored 3-tier status select below does not
-                          apply to this card, since its displayed status must
-                          always match qbr.healthStatus, not an editable
-                          good/caution/risk bucket that cannot represent
-                          values like "Excellent" or "Strong". */}
-                      {healthClasses ? (
-                        <p className={`text-xs font-medium ${healthClasses.text}`}>
-                          {healthCardLabel(m, qbr.healthStatus)}
-                        </p>
-                      ) : (
-                        <select
-                          value={m.status}
-                          onChange={e => updateMetric(i, j, 'status', e.target.value)}
-                          className={`text-xs rounded px-1 py-0.5 border-0 cursor-pointer font-medium
+                    return (
+                      <div key={j} className={`rounded-lg p-3.5 border ${cardClasses}`}>
+                        {/* Health-score card: label is also deterministic/read-only,
+                            same reasoning as the status below — it must always match
+                            qbr.healthScore/healthStatus, never an independently
+                            editable copy that could drift from the authoritative
+                            value shown on the cover card above. Non-health cards
+                            keep their existing editable label. */}
+                        {healthClasses ? (
+                          <p className="text-xs text-gray-500 mb-1">{m.label}</p>
+                        ) : (
+                          <EditableText
+                            value={m.label}
+                            onSave={val => updateMetric(i, j, 'label', val)}
+                            className="text-xs text-gray-500 mb-1 block"
+                          />
+                        )}
+                        {/* Metric value is read-only for every card, health and
+                            non-health alike — it is presentation copy of data
+                            sourced from qbr fields (ticket counts, uptime, etc.)
+                            or the health score, and editing only this display
+                            string would let it silently diverge from the
+                            authoritative source without changing anything it is
+                            meant to represent. */}
+                        <p className="text-xl font-bold text-navy-800 mb-1">{m.value}</p>
+                        {/* Health-score card: deterministic, read-only status —
+                            the AI-authored 3-tier status select below does not
+                            apply to this card, since its displayed status must
+                            always match qbr.healthStatus, not an editable
+                            good/caution/risk bucket that cannot represent
+                            values like "Excellent" or "Strong". */}
+                        {healthClasses ? (
+                          <p className={`text-xs font-medium ${healthClasses.text}`}>
+                            {healthCardLabel(m, qbr.healthStatus)}
+                          </p>
+                        ) : canEditQBR ? (
+                          <select
+                            value={m.status}
+                            onChange={e => updateMetric(i, j, 'status', e.target.value)}
+                            className={`text-xs rounded px-1 py-0.5 border-0 cursor-pointer font-medium
+                              ${m.status === 'good'    ? 'bg-green-100 text-green-700' :
+                                m.status === 'caution' ? 'bg-amber-100 text-amber-700' :
+                                                         'bg-red-100 text-red-700'}`}
+                          >
+                            <option value="good">On track</option>
+                            <option value="caution">Monitor</option>
+                            <option value="risk">Needs attention</option>
+                          </select>
+                        ) : (
+                          // Changing the status PATCHes the QBR too, so
+                          // read-only roles see the same label as plain text.
+                          <p className={`text-xs rounded px-1 py-0.5 font-medium inline-block
                             ${m.status === 'good'    ? 'bg-green-100 text-green-700' :
                               m.status === 'caution' ? 'bg-amber-100 text-amber-700' :
-                                                       'bg-red-100 text-red-700'}`}
-                        >
-                          <option value="good">On track</option>
-                          <option value="caution">Monitor</option>
-                          <option value="risk">Needs attention</option>
-                        </select>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
+                                                       'bg-red-100 text-red-700'}`}>
+                            {statusLabel(m.status)}
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
 
-            {/* Bullets */}
-            {slide.bullets && (
-              <div className="space-y-2.5">
-                {slide.bullets.map((b: string, j: number) => (
-                  <div key={j} className="flex items-start gap-2.5">
-                    <div className="w-0.5 h-5 bg-gold-500 flex-shrink-0 mt-1 rounded-full" />
-                    <EditableText
-                      value={b}
-                      onSave={val => updateBullet(i, j, val)}
-                      className="text-sm text-gray-700 flex-1"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Roadmap — item text is editable; column labels, structure,
-                ordering, and item count are unchanged from the read-only
-                presentation ported from components/qbr/SlideBody.tsx / the
-                public portal. */}
-            {slide.priorities && (
-              <div className="grid grid-cols-3 gap-4">
-                {[
-                  { key: 'critical',  label: 'Critical',  color: 'bg-red-50 border-red-200 text-red-700'    },
-                  { key: 'important', label: 'Important', color: 'bg-amber-50 border-amber-200 text-amber-700' },
-                  { key: 'strategic', label: 'Strategic', color: 'bg-blue-50 border-blue-200 text-blue-700'  },
-                ].map(col => (
-                  <div key={col.key} className={`rounded-lg border p-3 ${col.color}`}>
-                    <p className="text-xs font-bold uppercase tracking-wide mb-2">{col.label}</p>
-                    <ul className="space-y-1.5">
-                      {(slide.priorities[col.key] ?? []).map((item: string, k: number) => (
-                        <li key={k} className="text-xs leading-snug flex items-start gap-1">
-                          <span className="flex-shrink-0">—</span>
-                          <EditableText
-                            value={item}
-                            onSave={val => updatePriority(i, col.key as PriorityCategory, k, val)}
-                            className="text-xs leading-snug flex-1"
-                          />
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Recommendations — title/why/risk/benefit values are editable;
-                the numbering prefix and "Why it matters:"/"Risk if
-                ignored:"/"Expected benefit:" labels stay fixed, unchanged
-                from the read-only presentation ported from
-                components/qbr/SlideBody.tsx / the public portal. */}
-            {slide.recommendations && (
-              <div className="space-y-4">
-                {slide.recommendations.map((rec: any, j: number) => (
-                  <div key={j} className="border border-gray-100 rounded-lg p-4">
-                    <p className="text-sm font-semibold text-[#0a1634] mb-2">
-                      {j + 1}. <EditableText
-                        value={rec.title}
-                        onSave={val => updateRecommendation(i, j, 'title', val)}
-                        className="text-sm font-semibold text-[#0a1634]"
+              {/* Bullets */}
+              {slide.bullets && (
+                <div className="space-y-2.5">
+                  {slide.bullets.map((b: string, j: number) => (
+                    <div key={j} className="flex items-start gap-2.5">
+                      <div className="w-0.5 h-5 bg-gold-500 flex-shrink-0 mt-1 rounded-full" />
+                      <EditableText
+                        value={b}
+                        onSave={val => updateBullet(i, j, val)}
+                        className="text-sm text-gray-700 flex-1"
                       />
-                    </p>
-                    <div className="space-y-1 text-xs text-gray-600">
-                      <p><span className="font-medium text-gray-700">Why it matters:</span> <EditableText value={rec.why} onSave={val => updateRecommendation(i, j, 'why', val)} className="text-xs text-gray-600" /></p>
-                      <p><span className="font-medium text-gray-700">Risk if ignored:</span> <EditableText value={rec.risk} onSave={val => updateRecommendation(i, j, 'risk', val)} className="text-xs text-gray-600" /></p>
-                      <p><span className="font-medium text-gray-700">Expected benefit:</span> <EditableText value={rec.benefit} onSave={val => updateRecommendation(i, j, 'benefit', val)} className="text-xs text-gray-600" /></p>
                     </div>
-                  </div>
-                ))}
-              </div>
-            )}
+                  ))}
+                </div>
+              )}
 
+              {/* Roadmap — item text is editable; column labels, structure,
+                  ordering, and item count are unchanged from the read-only
+                  presentation ported from components/qbr/SlideBody.tsx / the
+                  public portal. */}
+              {slide.priorities && (
+                <div className="grid grid-cols-3 gap-4">
+                  {[
+                    { key: 'critical',  label: 'Critical',  color: 'bg-red-50 border-red-200 text-red-700'    },
+                    { key: 'important', label: 'Important', color: 'bg-amber-50 border-amber-200 text-amber-700' },
+                    { key: 'strategic', label: 'Strategic', color: 'bg-blue-50 border-blue-200 text-blue-700'  },
+                  ].map(col => (
+                    <div key={col.key} className={`rounded-lg border p-3 ${col.color}`}>
+                      <p className="text-xs font-bold uppercase tracking-wide mb-2">{col.label}</p>
+                      <ul className="space-y-1.5">
+                        {(slide.priorities[col.key] ?? []).map((item: string, k: number) => (
+                          <li key={k} className="text-xs leading-snug flex items-start gap-1">
+                            <span className="flex-shrink-0">—</span>
+                            <EditableText
+                              value={item}
+                              onSave={val => updatePriority(i, col.key as PriorityCategory, k, val)}
+                              className="text-xs leading-snug flex-1"
+                            />
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Recommendations — title/why/risk/benefit values are editable;
+                  the numbering prefix and "Why it matters:"/"Risk if
+                  ignored:"/"Expected benefit:" labels stay fixed, unchanged
+                  from the read-only presentation ported from
+                  components/qbr/SlideBody.tsx / the public portal. */}
+              {slide.recommendations && (
+                <div className="space-y-4">
+                  {slide.recommendations.map((rec: any, j: number) => (
+                    <div key={j} className="border border-gray-100 rounded-lg p-4">
+                      <p className="text-sm font-semibold text-[#0a1634] mb-2">
+                        {j + 1}. <EditableText
+                          value={rec.title}
+                          onSave={val => updateRecommendation(i, j, 'title', val)}
+                          className="text-sm font-semibold text-[#0a1634]"
+                        />
+                      </p>
+                      <div className="space-y-1 text-xs text-gray-600">
+                        <p><span className="font-medium text-gray-700">Why it matters:</span> <EditableText value={rec.why} onSave={val => updateRecommendation(i, j, 'why', val)} className="text-xs text-gray-600" /></p>
+                        <p><span className="font-medium text-gray-700">Risk if ignored:</span> <EditableText value={rec.risk} onSave={val => updateRecommendation(i, j, 'risk', val)} className="text-xs text-gray-600" /></p>
+                        <p><span className="font-medium text-gray-700">Expected benefit:</span> <EditableText value={rec.benefit} onSave={val => updateRecommendation(i, j, 'benefit', val)} className="text-xs text-gray-600" /></p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+            </div>
           </div>
-        </div>
-      ))}
+        ))}
+      </CanEditQBRContext.Provider>
 
       {/* ── Danger zone ── low-emphasis by design: a plain text control, set
           apart from the main action bar, so it is never visually confused
           with Export/Share/Send. Clicking it only reveals the confirmation
           panel below — it never deletes on first click. ── */}
-      <div className="mt-8 pt-4 border-t border-gray-100">
-        {!confirmingDelete ? (
-          <button
-            onClick={() => { setDeleteError(null); setConfirmingDelete(true) }}
-            className="text-xs text-gray-400 hover:text-red-600 flex items-center gap-1.5"
-          >
-            <Trash2 size={12} /> Delete this QBR
-          </button>
-        ) : (
-          <div className="card p-4 border-red-200 bg-red-50/40">
-            <p className="text-sm font-medium text-navy-800 mb-1">Delete this QBR?</p>
-            <p className="text-xs text-gray-600 mb-4">
-              It will be removed from your QBR history and any public share links will stop
-              working. This action does not restore your monthly QBR generation usage.
-            </p>
-            {deleteError && (
-              <p role="alert" className="text-xs text-red-600 mb-3">{deleteError}</p>
-            )}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => { setConfirmingDelete(false); setDeleteError(null) }}
-                disabled={deleting}
-                className="btn-secondary text-sm py-1.5 px-3"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={deleteQbr}
-                disabled={deleting}
-                aria-busy={deleting}
-                className="text-sm py-1.5 px-3 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-60 flex items-center gap-1.5"
-              >
-                {deleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                {deleting ? 'Deleting...' : 'Delete QBR'}
-              </button>
+      {canDeleteQBR && (
+        <div className="mt-8 pt-4 border-t border-gray-100">
+          {!confirmingDelete ? (
+            <button
+              onClick={() => { setDeleteError(null); setConfirmingDelete(true) }}
+              className="text-xs text-gray-400 hover:text-red-600 flex items-center gap-1.5"
+            >
+              <Trash2 size={12} /> Delete this QBR
+            </button>
+          ) : (
+            <div className="card p-4 border-red-200 bg-red-50/40">
+              <p className="text-sm font-medium text-navy-800 mb-1">Delete this QBR?</p>
+              <p className="text-xs text-gray-600 mb-4">
+                It will be removed from your QBR history and any public share links will stop
+                working. This action does not restore your monthly QBR generation usage.
+              </p>
+              {deleteError && (
+                <p role="alert" className="text-xs text-red-600 mb-3">{deleteError}</p>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => { setConfirmingDelete(false); setDeleteError(null) }}
+                  disabled={deleting}
+                  className="btn-secondary text-sm py-1.5 px-3"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={deleteQbr}
+                  disabled={deleting}
+                  aria-busy={deleting}
+                  className="text-sm py-1.5 px-3 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-60 flex items-center gap-1.5"
+                >
+                  {deleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                  {deleting ? 'Deleting...' : 'Delete QBR'}
+                </button>
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -929,6 +960,7 @@ function EditableText({
   multiline?: boolean
   className?: string
 }) {
+  const canEdit = useContext(CanEditQBRContext)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft]     = useState(value)
   const ref = useRef<HTMLTextAreaElement & HTMLInputElement>(null)
@@ -939,6 +971,9 @@ function EditableText({
     setEditing(false)
     if (draft.trim() !== value) onSave(draft.trim())
   }
+
+  // Read-only roles get the plain text: no click handler, hint, or hover.
+  if (!canEdit) return <span className={className}>{value}</span>
 
   if (editing) {
     const shared = {
