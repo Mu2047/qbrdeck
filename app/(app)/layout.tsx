@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { UserButton, useAuth } from '@clerk/nextjs'
 import { LayoutDashboard, Users, Settings, CreditCard, FileText, BarChart2 } from 'lucide-react'
+import { markActiveWorkspace } from '@/lib/switcher-state'
 
 const NAV = [
   { href: '/dashboard',           icon: LayoutDashboard, label: 'Dashboard' },
@@ -88,6 +89,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         setSwitching(false)
         return
       }
+      // router.refresh() re-renders Server Components but does not remount
+      // this client layout, so the list fetched above is never re-read and
+      // would keep showing the old workspace as active. Update it here, now
+      // that the server has accepted the switch.
+      setWorkspaces(prev => markActiveWorkspace(prev, workspaceId))
+      setSwitching(false)
       // Navigate to the dashboard root — a nested page (e.g. a specific
       // client) may not exist in the newly active workspace — then refresh
       // so every server-rendered workspace-scoped value re-fetches under
