@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import { Plus, ArrowRight, Users } from 'lucide-react'
 import { format } from 'date-fns'
 import { getWorkspaceContext } from '@/lib/workspace'
+import { can } from '@/lib/permissions'
 
 export default async function ClientsPage() {
   const { userId: clerkId } = auth()
@@ -12,6 +13,9 @@ export default async function ClientsPage() {
 
   const ctx = await getWorkspaceContext()
   if (!ctx) redirect('/sign-in')
+
+  // Same Admin+ check POST /api/clients enforces, on the active-workspace role.
+  const canCreateClient = can.createClient(ctx.member.role)
 
   const clients = await prisma.client.findMany({
     where: { workspaceId: ctx.workspaceId },
@@ -29,9 +33,11 @@ export default async function ClientsPage() {
           <h1 className="text-2xl font-bold text-navy-800">Clients</h1>
           <p className="text-gray-500 text-sm mt-1">{clients.length} client{clients.length !== 1 ? 's' : ''} total</p>
         </div>
-        <Link href="/dashboard/clients/new" className="btn-primary">
-          <Plus size={15} /> Add client
-        </Link>
+        {canCreateClient && (
+          <Link href="/dashboard/clients/new" className="btn-primary">
+            <Plus size={15} /> Add client
+          </Link>
+        )}
       </div>
 
       {clients.length === 0 ? (
@@ -39,7 +45,9 @@ export default async function ClientsPage() {
           <Users size={40} className="mx-auto text-gray-200 mb-4" />
           <h2 className="font-semibold text-navy-800 mb-2">No clients yet</h2>
           <p className="text-gray-400 text-sm mb-6 max-w-sm mx-auto">Add your first client to start generating professional QBR decks.</p>
-          <Link href="/dashboard/clients/new" className="btn-primary"><Plus size={14} /> Add first client</Link>
+          {canCreateClient && (
+            <Link href="/dashboard/clients/new" className="btn-primary"><Plus size={14} /> Add first client</Link>
+          )}
         </div>
       ) : (
         <div className="card divide-y divide-gray-50">

@@ -7,9 +7,17 @@ import { format } from 'date-fns'
 import { formatQbrDate, formatQbrQuarter } from '@/lib/qbr-display'
 import { formatReminderStatus } from '@/lib/reminder-utils'
 import type { ReminderStatus } from '@/lib/reminder-utils'
+import { can } from '@/lib/permissions'
+import { useActiveRole } from '@/lib/use-active-role'
 
 export default function ClientPage({ params }: { params: { id: string } }) {
   const [client, setClient]   = useState<any>(null)
+  // Controls follow the same can.* checks the API enforces, on the role in the
+  // ACTIVE workspace. Until the role is known (or if it can't be loaded) every
+  // gated control stays hidden.
+  const role           = useActiveRole()
+  const canEditClient  = role !== null && can.editClient(role)
+  const canGenerateQBR = role !== null && can.generateQBR(role)
   const [editing, setEditing] = useState(false)
   const [saving, setSaving]   = useState(false)
   const [error, setError]     = useState('')
@@ -148,15 +156,19 @@ export default function ClientPage({ params }: { params: { id: string } }) {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => { setError(''); setEditing(true) }}
-                className="btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5"
-              >
-                <Pencil size={13} /> Edit
-              </button>
-              <Link href={`/dashboard/clients/${client.id}/qbr/new`} className="btn-primary text-sm">
-                <Plus size={14} /> New QBR
-              </Link>
+              {canEditClient && (
+                <button
+                  onClick={() => { setError(''); setEditing(true) }}
+                  className="btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5"
+                >
+                  <Pencil size={13} /> Edit
+                </button>
+              )}
+              {canGenerateQBR && (
+                <Link href={`/dashboard/clients/${client.id}/qbr/new`} className="btn-primary text-sm">
+                  <Plus size={14} /> New QBR
+                </Link>
+              )}
             </div>
           </div>
         ) : (
@@ -251,6 +263,8 @@ export default function ClientPage({ params }: { params: { id: string } }) {
               </p>
             </div>
           </div>
+          {/* Rescheduling PATCHes the client, so it needs editClient too. */}
+          {canEditClient && (
           <div className="flex items-center gap-2">
             <input
               type="date"
@@ -293,6 +307,7 @@ export default function ClientPage({ params }: { params: { id: string } }) {
               {saving ? 'Saving...' : 'Save date'}
             </button>
           </div>
+          )}
           {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
         </div>
       )}
@@ -306,9 +321,11 @@ export default function ClientPage({ params }: { params: { id: string } }) {
           <div className="p-12 text-center">
             <FileText size={32} className="mx-auto text-gray-200 mb-3" />
             <p className="text-gray-500 text-sm mb-4">No QBRs generated yet for this client.</p>
-            <Link href={`/dashboard/clients/${client.id}/qbr/new`} className="btn-primary text-sm">
-              <Plus size={14} /> Generate first QBR
-            </Link>
+            {canGenerateQBR && (
+              <Link href={`/dashboard/clients/${client.id}/qbr/new`} className="btn-primary text-sm">
+                <Plus size={14} /> Generate first QBR
+              </Link>
+            )}
           </div>
         ) : (
           <div className="divide-y divide-gray-50">

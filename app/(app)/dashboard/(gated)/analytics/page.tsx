@@ -6,6 +6,8 @@ import {
   AlertTriangle, CheckCircle, Clock, Shield, Download, Lock,
 } from 'lucide-react'
 import Link from 'next/link'
+import { can } from '@/lib/permissions'
+import { useActiveRole } from '@/lib/use-active-role'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -185,6 +187,10 @@ const RANGE_OPTIONS = [
 
 export default function AnalyticsPage() {
   const [data,     setData]     = useState<AnalyticsData | null>(null)
+  // Admin+ may create clients (POST /api/clients); hidden until the
+  // active-workspace role is known.
+  const role            = useActiveRole()
+  const canCreateClient = role !== null && can.createClient(role)
   const [loading,  setLoading]  = useState(true)
   const [error,    setError]    = useState('')
   const [range,    setRange]    = useState('6m')
@@ -304,9 +310,11 @@ export default function AnalyticsPage() {
           <BarChart2 size={40} className="mx-auto text-gray-200 mb-4" />
           <p className="text-gray-500 font-medium mb-1">No clients yet</p>
           <p className="text-gray-400 text-sm mb-4">Add your first client to start generating QBRs and analytics.</p>
-          <Link href="/dashboard/clients/new" className="btn-primary text-sm">
-            Add your first client
-          </Link>
+          {canCreateClient && (
+            <Link href="/dashboard/clients/new" className="btn-primary text-sm">
+              Add your first client
+            </Link>
+          )}
         </div>
       ) : hasNoQbrs ? (
         <div className="card p-16 text-center">
