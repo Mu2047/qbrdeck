@@ -1,4 +1,7 @@
-import { TeamRole } from '@prisma/client'
+// Type-only Prisma import: client components also use `can` to hide controls
+// the API would refuse, so this module must never pull @prisma/client (or any
+// server-only code) into the browser bundle.
+import type { TeamRole } from '@prisma/client'
 import { getLimits } from '@/lib/limits'
 
 // Role hierarchy — higher index = more permissions

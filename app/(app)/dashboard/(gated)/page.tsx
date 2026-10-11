@@ -7,6 +7,7 @@ import { formatDistanceToNow } from 'date-fns'
 import { getReminderStatus } from '@/lib/reminder-utils'
 import { formatQbrDate, formatQbrQuarter } from '@/lib/qbr-display'
 import { getWorkspaceContext } from '@/lib/workspace'
+import { can } from '@/lib/permissions'
 
 async function getReminders(workspaceId: string) {
   const clients = await prisma.client.findMany({
@@ -49,6 +50,11 @@ export default async function DashboardPage() {
   const { workspaceId } = ctx
   const plan = ctx.subscription?.plan ?? 'FREE'
 
+  // Same checks the clients and generate-qbr routes enforce, on the role in
+  // the ACTIVE workspace: Admin+ manage clients, Member+ generate QBRs.
+  const canCreateClient = can.createClient(ctx.member.role)
+  const canGenerateQBR  = can.generateQBR(ctx.member.role)
+
   const [clients, totalQBRsResult, clientCount] = await Promise.all([
     prisma.client.findMany({
       where: { workspaceId },
@@ -87,12 +93,14 @@ export default async function DashboardPage() {
           <span className={`text-xs font-medium ${urgency.color}`}>
             {urgency.label} · {formatQbrDate(client.nextQbrDate, 'short')}
           </span>
+          {canGenerateQBR && (
           <Link
             href={`/dashboard/clients/${client.id}/qbr/new?quarter=${client.lastQbr ? (Number(client.lastQbr.quarter) === 4 ? 1 : Number(client.lastQbr.quarter) + 1) : new Date().getMonth() < 3 ? 1 : new Date().getMonth() < 6 ? 2 : new Date().getMonth() < 9 ? 3 : 4}&year=${client.lastQbr && Number(client.lastQbr.quarter) === 4 ? client.lastQbr.year + 1 : client.lastQbr?.year ?? new Date().getFullYear()}`}
             className="text-xs btn-primary py-1 px-2.5"
           >
             Start QBR
           </Link>
+          )}
         </div>
       </div>
     )
@@ -147,15 +155,19 @@ export default async function DashboardPage() {
       <div className="card">
         <div className="flex items-center justify-between p-5 border-b border-gray-100">
           <h2 className="font-semibold text-navy-800 text-sm">Recent clients</h2>
-          <Link href="/dashboard/clients/new" className="btn-primary text-xs py-1.5 px-3">
-            <Plus size={12} /> Add client
-          </Link>
+          {canCreateClient && (
+            <Link href="/dashboard/clients/new" className="btn-primary text-xs py-1.5 px-3">
+              <Plus size={12} /> Add client
+            </Link>
+          )}
         </div>
         {clients.length === 0 ? (
           <div className="p-12 text-center">
             <Users size={32} className="mx-auto text-gray-300 mb-3" />
             <p className="text-gray-500 text-sm mb-4">No clients yet. Add your first client to generate your first QBR.</p>
-            <Link href="/dashboard/clients/new" className="btn-primary"><Plus size={14} /> Add first client</Link>
+            {canCreateClient && (
+              <Link href="/dashboard/clients/new" className="btn-primary"><Plus size={14} /> Add first client</Link>
+            )}
           </div>
         ) : (
           <div className="divide-y divide-gray-50">
