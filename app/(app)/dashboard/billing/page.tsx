@@ -1,7 +1,8 @@
 import { auth } from '@clerk/nextjs/server'
 import { redirect } from 'next/navigation'
-import { PLANS } from '@/lib/stripe'
-import { PLAN_LIMITS, formatLimit } from '@/lib/limits'
+import { PLAN_LIMITS, PLAN_NAMES, formatLimit, type PlanKey } from '@/lib/limits'
+import { formatPrice } from '@/lib/billing/format-price'
+import { PAID_PLANS, formatRegionalPrice, getAvailableRegions } from '@/lib/billing/regional-prices'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceContext } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
@@ -15,7 +16,7 @@ export default async function BillingPage() {
   const ctx = await getWorkspaceContext()
   if (!ctx) redirect('/sign-in')
 
-  const currentPlan = (ctx.subscription?.plan ?? 'FREE') as keyof typeof PLANS
+  const currentPlan = (ctx.subscription?.plan ?? 'FREE') as PlanKey
   const sub         = ctx.subscription
   const limits      = PLAN_LIMITS[currentPlan]
 
@@ -39,12 +40,18 @@ export default async function BillingPage() {
   })
   const seatsUsed = memberCount + pendingInviteCount
 
+  // USD only until regional checkout is certified. Amounts come from the
+  // canonical pricing config; checkout is offered only when the server has a
+  // configured, checkout-enabled Stripe Price for the region.
+  const region            = 'GLOBAL' as const
+  const checkoutAvailable = getAvailableRegions().includes(region)
+
   return (
     <div className="p-8 max-w-5xl">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-navy-800">Billing & Plan</h1>
         <p className="text-gray-500 text-sm mt-1">
-          Current plan: <span className="font-medium text-navy-800">{PLANS[currentPlan].name}</span>
+          Current plan: <span className="font-medium text-navy-800">{PLAN_NAMES[currentPlan]}</span>
         </p>
       </div>
 
@@ -53,7 +60,7 @@ export default async function BillingPage() {
         <div className="flex items-center gap-2 mb-4">
           <Zap size={15} className={currentPlan === 'FREE' ? 'text-amber-500' : 'text-navy-500'} />
           <p className={`text-sm font-medium ${currentPlan === 'FREE' ? 'text-amber-800' : 'text-navy-800'}`}>
-            {currentPlan === 'FREE' ? 'Free plan usage this month' : `${PLANS[currentPlan].name} plan usage`}
+            {currentPlan === 'FREE' ? 'Free plan usage this month' : `${PLAN_NAMES[currentPlan]} plan usage`}
           </p>
         </div>
         <div className="grid grid-cols-2 gap-x-8 gap-y-4">
@@ -102,7 +109,7 @@ export default async function BillingPage() {
             {currentPlan === 'FREE' && <span className="badge-gray">Current</span>}
           </div>
           <div className="mb-5">
-            <span className="text-3xl font-bold text-navy-800">$0</span>
+            <span className="text-3xl font-bold text-navy-800">{formatPrice(0, 'USD')}</span>
             <span className="text-gray-400 text-sm">/month</span>
           </div>
           <ul className="space-y-2 mb-6 flex-1">
@@ -117,8 +124,7 @@ export default async function BillingPage() {
           </button>
         </div>
 
-        {(['SOLO', 'GROWTH', 'AGENCY'] as const).map(planKey => {
-          const plan      = PLANS[planKey]
+        {PAID_PLANS.map(planKey => {
           const isCurrent = currentPlan === planKey
           return (
             <div key={planKey} className={`card p-6 flex flex-col relative ${isCurrent ? 'ring-2 ring-navy-800' : planKey === 'GROWTH' ? 'ring-2 ring-gold-500' : ''}`}>
@@ -128,11 +134,11 @@ export default async function BillingPage() {
                 </div>
               )}
               <div className="flex items-center justify-between mb-4">
-                <h2 className="font-bold text-navy-800 text-lg">{plan.name}</h2>
+                <h2 className="font-bold text-navy-800 text-lg">{PLAN_NAMES[planKey]}</h2>
                 {isCurrent && <span className="badge-gray">Current</span>}
               </div>
               <div className="mb-5">
-                <span className="text-3xl font-bold text-navy-800">${plan.price}</span>
+                <span className="text-3xl font-bold text-navy-800">{formatRegionalPrice(planKey, region)}</span>
                 <span className="text-gray-400 text-sm">/month</span>
               </div>
               <ul className="space-y-2 mb-6 flex-1">
@@ -143,7 +149,7 @@ export default async function BillingPage() {
                 ))}
               </ul>
               {canManageBilling ? (
-                <BillingButton planKey={planKey} isCurrent={isCurrent} priceId={plan.priceId ?? null} />
+                <BillingButton planKey={planKey} isCurrent={isCurrent} checkoutAvailable={checkoutAvailable} />
               ) : isCurrent ? (
                 <button disabled className="btn-secondary w-full justify-center opacity-50 cursor-not-allowed">
                   Current plan
@@ -167,7 +173,7 @@ export default async function BillingPage() {
             <p className="text-sm font-medium text-navy-800">Manage subscription</p>
             <p className="text-xs text-gray-400 mt-0.5">Cancel, update payment method, or view invoices</p>
           </div>
-          <BillingButton planKey="MANAGE" isCurrent={false} priceId={null} />
+          <BillingButton planKey="MANAGE" isCurrent={false} />
         </div>
       )}
 

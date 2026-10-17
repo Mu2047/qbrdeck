@@ -4,6 +4,11 @@ import { stripe, createOrRetrieveCustomer } from '@/lib/stripe'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceMembership } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
+import {
+  parseCheckoutRequest,
+  hasLivePaidSubscription,
+  EXISTING_SUBSCRIPTION_MESSAGE,
+} from '@/lib/billing/checkout-request'
 
 export async function POST(req: NextRequest) {
   try {
@@ -19,17 +24,23 @@ export async function POST(req: NextRequest) {
     const user = await prisma.user.findUnique({ where: { clerkId } })
     if (!user) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    const { priceId } = await req.json()
+    const body = await req.json().catch(() => null)
 
-    // Whitelist: only the three real plan prices may be checked out
-    const ALLOWED_PRICES = [
-      process.env.STRIPE_PRICE_SOLO,
-      process.env.STRIPE_PRICE_GROWTH,
-      process.env.STRIPE_PRICE_AGENCY,
-    ].filter(Boolean)
+    // Server-controlled price only: the body names a plan/region/currency (or,
+    // for the transition release, an exact configured USD priceId) and the
+    // Stripe Price is resolved from server config — see lib/billing/checkout-request.ts.
+    const parsed = parseCheckoutRequest(body)
+    if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: parsed.status })
+    const { price } = parsed
 
-    if (!priceId || !ALLOWED_PRICES.includes(priceId))
-      return NextResponse.json({ error: 'Invalid plan selected' }, { status: 400 })
+    // A live subscription must never get a second, parallel one through
+    // Checkout. Checked before any Stripe call.
+    const existing = await prisma.subscription.findUnique({
+      where:  { workspaceId: membership.workspaceId },
+      select: { plan: true, status: true, stripeStatus: true, stripeSubscriptionId: true },
+    })
+    if (hasLivePaidSubscription(existing))
+      return NextResponse.json({ error: EXISTING_SUBSCRIPTION_MESSAGE, code: 'SUBSCRIPTION_EXISTS' }, { status: 409 })
 
     const customerId = await createOrRetrieveCustomer({
       workspaceId: membership.workspaceId,
@@ -40,12 +51,19 @@ export async function POST(req: NextRequest) {
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       payment_method_types: ['card'],
-      line_items: [{ price: priceId, quantity: 1 }],
+      line_items: [{ price: price.stripePriceId, quantity: 1 }],
       mode: 'subscription',
       success_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/billing?success=true`,
       cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/billing`,
       allow_promotion_codes: true,
-      metadata: { workspaceId: membership.workspaceId },
+      // plan/region/currency are an audit trail only — the webhook derives the
+      // plan from the subscription's Stripe Price, never from metadata.
+      metadata: {
+        workspaceId: membership.workspaceId,
+        plan:        price.plan,
+        region:      price.region,
+        currency:    price.currency,
+      },
     })
 
     return NextResponse.json({ url: session.url })

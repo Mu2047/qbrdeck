@@ -106,7 +106,7 @@ describe('Manage Subscription (SOURCE-CONTRACT)', () => {
 
 describe('plan-card upgrade controls (SOURCE-CONTRACT)', () => {
   it('the Upgrade/checkout BillingButton is rendered only when canManageBilling', () => {
-    expect(planCards).toMatch(/\{canManageBilling \? \(\s*<BillingButton planKey=\{planKey\} isCurrent=\{isCurrent\} priceId=\{plan\.priceId \?\? null\} \/>/)
+    expect(planCards).toMatch(/\{canManageBilling \? \(\s*<BillingButton planKey=\{planKey\} isCurrent=\{isCurrent\} checkoutAvailable=\{checkoutAvailable\} \/>/)
     // The only BillingButton in the plan cards is the gated one.
     expect(planCards.match(/<BillingButton\b/g)).toHaveLength(1)
   })
@@ -115,7 +115,7 @@ describe('plan-card upgrade controls (SOURCE-CONTRACT)', () => {
     const nonOwner = planCards.slice(planCards.indexOf(') : isCurrent ? ('))
     expect(nonOwner).toMatch(/<button disabled[^>]*>\s*Current plan\s*<\/button>/)
     expect(nonOwner).toMatch(/\) : null\}/)
-    expect(nonOwner).not.toMatch(/onClick|BillingButton|priceId/)
+    expect(nonOwner).not.toMatch(/onClick|BillingButton|priceId|checkoutAvailable/)
   })
 
   it('non-Owners are told why there are no billing actions', () => {
@@ -129,9 +129,9 @@ describe('plan and usage stay visible to every role (SOURCE-CONTRACT)', () => {
     expect(usageCard).toContain('label="Clients"')
     expect(usageCard).toContain('label="QBRs generated this month"')
     // Prices and features render for every plan card regardless of role.
-    expect(planCards).toContain('${plan.price}')
+    expect(planCards).toContain('{formatRegionalPrice(planKey, region)}')
     expect(planCards).toContain('buildFeatureList(planKey)')
-    expect(billingSource).toContain('Current plan: <span className="font-medium text-navy-800">{PLANS[currentPlan].name}</span>')
+    expect(billingSource).toContain('Current plan: <span className="font-medium text-navy-800">{PLAN_NAMES[currentPlan]}</span>')
   })
 })
 
