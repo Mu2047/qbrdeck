@@ -91,3 +91,34 @@ describe('billing page — no Custom AI tone promise', () => {
     expect(billingSource).not.toMatch(/Custom AI tone/i)
   })
 })
+
+describe('marketing page — prices come from the canonical pricing config', () => {
+  it('renders each price through formatRegionalPrice (USD/GLOBAL), not a local amount', () => {
+    expect(marketingSource).toContain("import { formatRegionalPrice, type PaidPlan } from '@/lib/billing/regional-prices'")
+    expect(marketingSource).toContain("{formatRegionalPrice(plan.key, 'GLOBAL')}")
+    expect(marketingSource).not.toMatch(/price:\s*\d+/)
+    expect(marketingSource).not.toContain('${plan.price}')
+  })
+
+  it('each plan card is keyed to its canonical paid plan', () => {
+    expect(marketingSource).toMatch(/key: 'SOLO',\s*name: 'Solo'/)
+    expect(marketingSource).toMatch(/key: 'GROWTH',\s*name: 'Growth'/)
+    expect(marketingSource).toMatch(/key: 'AGENCY',\s*name: 'Agency'/)
+  })
+})
+
+describe('marketing page — Agency lists every canonical Agency feature', () => {
+  const agencyBlock = marketingSource.match(/name: 'Agency'[\s\S]*?\},/)?.[0] ?? ''
+
+  it.each([
+    'Unlimited clients',
+    'Unlimited QBRs',
+    'Unlimited exports',
+    'Unlimited team members',
+    'White-label branding',
+    'Advanced analytics',
+    'Priority support',
+  ])('Agency lists "%s"', feature => {
+    expect(agencyBlock).toContain(`'${feature}'`)
+  })
+})

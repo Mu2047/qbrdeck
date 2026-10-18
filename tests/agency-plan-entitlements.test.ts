@@ -15,6 +15,14 @@ import { resolveBranding, isWhiteLabelPlan, isPlatformBrandedPlan } from '@/lib/
 import { hasSeatCapacity, fitsWithinSeatLimit } from '@/lib/team-invites'
 import { canInviteMoreMembers, resolveMspBranding } from '@/lib/permissions'
 import { selectActiveMembership } from '@/lib/workspace'
+import {
+  APPROVED_PRICE_AMOUNTS,
+  UnknownStripePriceError,
+  formatRegionalPrice,
+  getRegionalPriceTable,
+  resolvePlanFromStripePrice,
+} from '@/lib/billing/regional-prices'
+import { parseCheckoutRequest } from '@/lib/billing/checkout-request'
 
 // Agency plan certification matrix — FREE / SOLO / GROWTH / AGENCY side by
 // side, so a regression in any one plan's entitlement shows up next to the
@@ -25,11 +33,12 @@ import { selectActiveMembership } from '@/lib/workspace'
 //  - EXECUTABLE tests import the real lib/limits.ts, lib/branding.ts,
 //    lib/team-invites.ts, lib/permissions.ts and lib/workspace.ts and run them.
 //
-//  - SOURCE-CONTRACT tests read the Stripe webhook, checkout route, lib/stripe.ts
-//    and the billing page as plain text. The webhook's getPlanFromPriceId is not
-//    exported (Next.js route files may only export handlers), and importing
-//    lib/stripe.ts would construct a live Stripe client, so both are proven
-//    structurally.
+//  - Stripe Price → Plan mapping, the checkout price whitelist and the plan
+//    price live in lib/billing/* (pure, env passed explicitly) and are run
+//    for real. SOURCE-CONTRACT tests then read the webhook, checkout route,
+//    lib/stripe.ts and the billing page as plain text to prove they delegate
+//    to that canonical module (Next.js route files may only export handlers,
+//    and importing lib/stripe.ts would construct a live Stripe client).
 //
 // No test here opens a database connection, calls Stripe, or touches a real
 // subscription.
@@ -220,26 +229,37 @@ describe('active-workspace isolation — entitlements come from the ACTIVE works
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SOURCE-CONTRACT — Stripe price mapping, checkout, price display
+// Stripe price mapping, checkout whitelist, price display
+// (EXECUTABLE — lib/billing/*, plus SOURCE-CONTRACT delegation checks)
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('Stripe webhook plan mapping (SOURCE-CONTRACT)', () => {
+const PRICE_ENV = {
+  STRIPE_PRICE_SOLO:   'price_solo',
+  STRIPE_PRICE_GROWTH: 'price_growth',
+  STRIPE_PRICE_AGENCY: 'price_agency',
+}
+
+describe('Stripe webhook plan mapping', () => {
   const fnMatch = webhookSource.match(/function getPlanFromPriceId[\s\S]*?\n\}/)
   const fn = fnMatch?.[0] ?? ''
 
-  it('locates getPlanFromPriceId', () => {
+  it('the webhook delegates plan mapping to the canonical resolver (SOURCE-CONTRACT)', () => {
     expect(fn).not.toBe('')
+    expect(fn).toMatch(/return resolvePlanFromStripePrice\(priceId\)/)
+    expect(fn).not.toMatch(/process\.env/)
+    expect(fn).not.toMatch(/'FREE'/)
   })
 
-  it('STRIPE_PRICE_AGENCY maps to AGENCY and nothing else does', () => {
-    expect(fn).toMatch(/priceId === process\.env\.STRIPE_PRICE_AGENCY\) return 'AGENCY'/)
-    expect(fn.match(/return 'AGENCY'/g)).toHaveLength(1)
+  it('STRIPE_PRICE_AGENCY maps to AGENCY and nothing else does (EXECUTABLE)', () => {
+    expect(resolvePlanFromStripePrice('price_agency', PRICE_ENV)).toBe('AGENCY')
+    const agencyIds = getRegionalPriceTable(PRICE_ENV).filter(p => p.recognized && p.plan === 'AGENCY').map(p => p.stripePriceId)
+    expect(agencyIds).toEqual(['price_agency'])
   })
 
-  it('each paid price maps only to its own plan; unknown prices fall back to FREE', () => {
-    expect(fn).toMatch(/STRIPE_PRICE_SOLO\)\s+return 'SOLO'/)
-    expect(fn).toMatch(/STRIPE_PRICE_GROWTH\) return 'GROWTH'/)
-    expect(fn.trim()).toMatch(/return 'FREE'\n\}$/)
+  it('each paid price maps only to its own plan; unknown prices fail closed instead of falling back to FREE (EXECUTABLE)', () => {
+    expect(resolvePlanFromStripePrice('price_solo', PRICE_ENV)).toBe('SOLO')
+    expect(resolvePlanFromStripePrice('price_growth', PRICE_ENV)).toBe('GROWTH')
+    expect(() => resolvePlanFromStripePrice('price_unknown', PRICE_ENV)).toThrow(UnknownStripePriceError)
   })
 
   it('subscription.deleted returns the workspace to FREE without deleting data', () => {
@@ -253,30 +273,38 @@ describe('Stripe webhook plan mapping (SOURCE-CONTRACT)', () => {
   })
 })
 
-describe('checkout whitelist (SOURCE-CONTRACT)', () => {
-  it('Agency is one of exactly three allowed prices', () => {
-    const allowed = checkoutSource.match(/const ALLOWED_PRICES = \[([\s\S]*?)\]/)?.[1] ?? ''
-    expect(allowed).toContain('process.env.STRIPE_PRICE_AGENCY')
-    expect(allowed.match(/process\.env\.STRIPE_PRICE_\w+/g)).toEqual([
-      'process.env.STRIPE_PRICE_SOLO',
-      'process.env.STRIPE_PRICE_GROWTH',
-      'process.env.STRIPE_PRICE_AGENCY',
-    ])
+describe('checkout whitelist', () => {
+  it('Agency is one of exactly three purchasable prices (EXECUTABLE)', () => {
+    const purchasable = getRegionalPriceTable(PRICE_ENV).filter(p => p.checkoutEnabled).map(p => p.stripePriceId)
+    expect(purchasable).toEqual(['price_solo', 'price_growth', 'price_agency'])
+
+    const agency = parseCheckoutRequest({ plan: 'AGENCY', region: 'GLOBAL', currency: 'USD' }, PRICE_ENV)
+    expect(agency.ok && agency.price.stripePriceId).toBe('price_agency')
+    expect(parseCheckoutRequest({ priceId: 'price_other' }, PRICE_ENV).ok).toBe(false)
+  })
+
+  it('the checkout route creates sessions only from the server-resolved price (SOURCE-CONTRACT)', () => {
+    expect(checkoutSource).toMatch(/const parsed = parseCheckoutRequest\(body\)/)
+    expect(checkoutSource).toMatch(/line_items: \[\{ price: price\.stripePriceId, quantity: 1 \}\]/)
+    expect(checkoutSource).not.toMatch(/process\.env\.STRIPE_PRICE_/)
   })
 })
 
-describe('Agency price and billing display (SOURCE-CONTRACT)', () => {
-  const agencyBlock = stripeSource.match(/AGENCY: \{[\s\S]*?\n  \},/)?.[0] ?? ''
-
-  it('Agency is priced at $199 (prices are stored in whole dollars, not cents)', () => {
-    expect(agencyBlock).toMatch(/price:\s*199,/)
-    expect(agencyBlock).toMatch(/priceId:\s*process\.env\.STRIPE_PRICE_AGENCY/)
+describe('Agency price and billing display', () => {
+  it('Agency is priced at $199 (stored as 19900 USD minor units) (EXECUTABLE)', () => {
+    expect(APPROVED_PRICE_AMOUNTS.GLOBAL.AGENCY).toBe(19_900)
+    expect(formatRegionalPrice('AGENCY', 'GLOBAL')).toBe('$199')
   })
 
-  it('billing page renders plan price/limits from the canonical sources, not lib/stripe.ts limit fields', () => {
-    expect(billingSource).toContain('${plan.price}')
+  it('lib/stripe.ts no longer carries plan prices, limits or features (SOURCE-CONTRACT)', () => {
+    expect(stripeSource).not.toMatch(/export const PLANS\b/)
+    expect(stripeSource).not.toMatch(/\b(price|priceId|clientLimit|qbrLimit|exportLimit|features):/)
+  })
+
+  it('billing page renders plan price/limits from the canonical sources (SOURCE-CONTRACT)', () => {
+    expect(billingSource).toContain('{formatRegionalPrice(planKey, region)}')
     expect(billingSource).toMatch(/const limits\s+= PLAN_LIMITS\[currentPlan\]/)
-    expect(billingSource).not.toMatch(/plan\.(clientLimit|qbrLimit|exportLimit|features)/)
-    expect(billingSource).not.toMatch(/PLANS\[\w+\]\.(clientLimit|qbrLimit|exportLimit|features)/)
+    expect(billingSource).not.toMatch(/plan\.(price|priceId|clientLimit|qbrLimit|exportLimit|features)/)
+    expect(billingSource).not.toMatch(/PLANS\[/)
   })
 })

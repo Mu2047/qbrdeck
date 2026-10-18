@@ -3,14 +3,16 @@ import { stripe } from '@/lib/stripe'
 import { prisma } from '@/lib/prisma'
 import { PAYMENT_GRACE_PERIOD_DAYS } from '@/lib/subscription-access'
 import { getSubscriptionPeriod } from '@/lib/stripe-subscription-period'
+import { resolvePlanFromStripePrice } from '@/lib/billing/regional-prices'
 import type Stripe from 'stripe'
 
-function getPlanFromPriceId(priceId?: string): 'FREE' | 'SOLO' | 'GROWTH' | 'AGENCY' {
-  if (!priceId) return 'FREE'
-  if (priceId === process.env.STRIPE_PRICE_SOLO)   return 'SOLO'
-  if (priceId === process.env.STRIPE_PRICE_GROWTH) return 'GROWTH'
-  if (priceId === process.env.STRIPE_PRICE_AGENCY) return 'AGENCY'
-  return 'FREE'
+// Plan comes ONLY from an approved Stripe Price mapping (any region/currency
+// of a plan resolves to that one plan). An unknown or missing Price throws
+// BEFORE any Subscription write, so the event is marked FAILED, Stripe
+// retries, and the workspace keeps its current plan — it is never silently
+// downgraded to FREE. customer.subscription.deleted is the only FREE path.
+function getPlanFromPriceId(priceId?: string): 'SOLO' | 'GROWTH' | 'AGENCY' {
+  return resolvePlanFromStripePrice(priceId)
 }
 
 // Resolves which workspace a Stripe event belongs to. Tries the DB join

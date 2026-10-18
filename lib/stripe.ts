@@ -5,41 +5,9 @@ export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   typescript: true,
 })
 
-export const PLANS = {
-  FREE: {
-    name: 'Free',
-    price: 0,
-    clientLimit: 2,
-    qbrLimit: 3,
-    exportLimit: 3,
-    features: ['2 clients', '3 QBRs per month', '3 exports per month', 'Browser preview'],
-  },
-  SOLO: {
-    name: 'Solo',
-    price: 49,
-    priceId: process.env.STRIPE_PRICE_SOLO,
-    clientLimit: 10,
-    qbrLimit: 20,
-    exportLimit: null,
-    features: ['10 clients', '20 QBRs per month', 'Unlimited exports', 'PDF + PPTX export', 'MI Secure Tech branding'],
-  },
-  GROWTH: {
-    name: 'Growth',
-    price: 99,
-    priceId: process.env.STRIPE_PRICE_GROWTH,
-    clientLimit: 50,
-    qbrLimit: 999,
-    features: ['50 clients', 'Unlimited QBRs', 'PDF + PPTX export', 'White-label branding', 'Priority support', 'Up to 5 team members'],
-  },
-  AGENCY: {
-    name: 'Agency',
-    price: 199,
-    priceId: process.env.STRIPE_PRICE_AGENCY,
-    clientLimit: 999,
-    qbrLimit: 999,
-    features: ['Unlimited clients', 'Unlimited QBRs', 'PDF + PPTX export', 'White-label branding', 'Custom AI tone', 'Priority support', 'Unlimited team members'],
-  },
-}
+// Plan prices and Stripe Price IDs live in lib/billing/regional-prices.ts;
+// plan limits and features live in lib/limits.ts. This module owns only the
+// Stripe client and customer lookup.
 
 export async function createOrRetrieveCustomer({
   workspaceId,

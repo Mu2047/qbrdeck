@@ -5,11 +5,11 @@ import { useState } from 'react'
 export function BillingButton({
   planKey,
   isCurrent,
-  priceId,
+  checkoutAvailable = false,
 }: {
   planKey: string
   isCurrent: boolean
-  priceId?: string | null
+  checkoutAvailable?: boolean
 }) {
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
@@ -30,12 +30,14 @@ export function BillingButton({
       }
 
       // ── Upgrade / checkout ───────────────────────────────────────────────
-      if (!priceId) { setError('Price ID missing'); setLoading(false); return }
+      // Sends only the plan and billing region/currency. The server resolves
+      // the Stripe Price and amount — the browser never chooses either.
+      if (!checkoutAvailable) { setError('Checkout is not available right now'); setLoading(false); return }
 
       const res  = await fetch('/api/billing/checkout', {
         method : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body   : JSON.stringify({ priceId }),
+        body   : JSON.stringify({ plan: planKey, region: 'GLOBAL', currency: 'USD' }),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.error ?? 'Something went wrong'); setLoading(false); return }
@@ -67,5 +69,5 @@ export function BillingButton({
 
 // Keep for backwards compatibility if used elsewhere
 export function ManageSubscriptionButton() {
-  return <BillingButton planKey="MANAGE" isCurrent={false} priceId={null} />
+  return <BillingButton planKey="MANAGE" isCurrent={false} />
 }
