@@ -110,6 +110,14 @@ describe('workspace isolation', () => {
     expect(mocks.sessionsCreate.mock.calls[0][0].metadata.workspaceId).toBe('ws_active')
   })
 
+  it('a customer ownership conflict fails closed: 500, no checkout session', async () => {
+    mocks.createOrRetrieveCustomer.mockRejectedValue(new Error('Billing account ownership conflict — contact support'))
+    const { status, data } = await call({ plan: 'GROWTH', region: 'GLOBAL', currency: 'USD' })
+    expect(status).toBe(500)
+    expect(data.error).not.toMatch(/cus_|ws_/)
+    expect(mocks.sessionsCreate).not.toHaveBeenCalled()
+  })
+
   it('a workspaceId in the body is rejected, not honoured', async () => {
     const { status } = await call({ plan: 'GROWTH', region: 'GLOBAL', currency: 'USD', workspaceId: 'ws_other' })
     expect(status).toBe(400)
