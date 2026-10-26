@@ -184,6 +184,11 @@ async function handleSubscriptionDeleted(sub: Stripe.Subscription): Promise<void
     throw new Error(`customer.subscription.deleted: unable to resolve workspace for customer ${customerId}`)
   }
 
+  // stripePriceId is deliberately NOT cleared: the last recognized Price is
+  // kept as billing history so the Customer Portal can still route a former
+  // subscriber to their currency's configuration (lib/billing/portal-config.ts).
+  // It is NOT evidence of an active subscription or entitlement — plan, status
+  // and stripeSubscriptionId are, and they are reset here.
   await prisma.subscription.update({
     where: { workspaceId },
     data: {
@@ -191,7 +196,6 @@ async function handleSubscriptionDeleted(sub: Stripe.Subscription): Promise<void
       status:               'canceled',
       stripeStatus:         'canceled',
       stripeSubscriptionId: null,
-      stripePriceId:        null,
       cancelAtPeriodEnd:    false,
       pastDueAt:            null,
       graceEndsAt:          null,

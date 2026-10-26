@@ -156,8 +156,13 @@ describe('lifecycle paths unchanged', () => {
     expect(res.status).toBe(200)
     const data = mocks.subscriptionUpdate.mock.calls[0][0].data
     expect(data.plan).toBe('FREE')
+    expect(data.status).toBe('canceled')
+    expect(data.stripeStatus).toBe('canceled')
     expect(data.stripeSubscriptionId).toBeNull()
-    expect(data.stripePriceId).toBeNull()
+    expect(data.cancelAtPeriodEnd).toBe(false)
+    // Last recognized Price is retained as billing history (portal currency),
+    // and the deleted subscription's own Price is never written.
+    expect(data).not.toHaveProperty('stripePriceId')
   })
 
   it('invoice.paid does not touch plan, so an unknown price cannot downgrade there either', async () => {
