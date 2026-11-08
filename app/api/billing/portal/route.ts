@@ -5,6 +5,7 @@ import { getWorkspaceMembership } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
 import { prisma } from '@/lib/prisma'
 import { currencyForStripePrice, portalConfigurationForCurrency } from '@/lib/billing/portal-config'
+import { resolveAppOrigin } from '@/lib/app-origin'
 
 const NO_SUBSCRIPTION     = 'No active subscription'
 const PORTAL_UNAVAILABLE  = 'Billing portal is not available right now — contact support'
@@ -45,7 +46,7 @@ export async function POST(req: NextRequest) {
     const session = await stripe.billingPortal.sessions.create({
       customer: customerId,
       configuration,
-      return_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/settings`,
+      return_url: `${resolveAppOrigin(req)}/dashboard/settings`,
     })
 
     return NextResponse.json({ url: session.url })

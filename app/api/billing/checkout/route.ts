@@ -9,6 +9,7 @@ import {
   hasLivePaidSubscription,
   EXISTING_SUBSCRIPTION_MESSAGE,
 } from '@/lib/billing/checkout-request'
+import { resolveAppOrigin } from '@/lib/app-origin'
 
 export async function POST(req: NextRequest) {
   try {
@@ -48,13 +49,16 @@ export async function POST(req: NextRequest) {
       name: user.name ?? undefined,
     })
 
+    // Return to the exact trusted origin checkout started from (see lib/app-origin.ts).
+    const appOrigin = resolveAppOrigin(req)
+
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       payment_method_types: ['card'],
       line_items: [{ price: price.stripePriceId, quantity: 1 }],
       mode: 'subscription',
-      success_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/billing?success=true`,
-      cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/billing`,
+      success_url: `${appOrigin}/dashboard/billing?success=true`,
+      cancel_url: `${appOrigin}/dashboard/billing`,
       allow_promotion_codes: true,
       // plan/region/currency are an audit trail only — the webhook derives the
       // plan from the subscription's Stripe Price, never from metadata.

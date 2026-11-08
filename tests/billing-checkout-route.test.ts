@@ -42,18 +42,26 @@ const savedEnv: Record<string, string | undefined> = {}
 
 const FREE_SUB = { plan: 'FREE', status: 'active', stripeStatus: null, stripeSubscriptionId: null }
 
-function request(body: unknown) {
-  return { json: async () => body } as any
+const PRODUCTION_ORIGIN = 'https://qbrdeck.misecuretechsolutions.com'
+const PREVIEW_ORIGIN    = 'https://qbrdeck-jql1ygh2r-techtonits-7492s-projects.vercel.app'
+const BRANCH_ORIGIN     = 'https://qbrdeck-git-feat-regional-pricing-techtonits-7492s-projects.vercel.app'
+
+function request(body: unknown, origin = PRODUCTION_ORIGIN) {
+  const url = `${origin}/api/billing/checkout`
+  return { json: async () => body, url, nextUrl: new URL(url) } as any
 }
 
-async function call(body: unknown) {
-  const res  = await POST(request(body))
+async function call(body: unknown, origin?: string) {
+  const res  = await POST(request(body, origin))
   return { status: res.status, data: await res.json() }
 }
 
 beforeEach(() => {
   for (const k of ENV_KEYS) { savedEnv[k] = process.env[k]; delete process.env[k] }
   Object.assign(process.env, PRICE_ENV)
+  vi.stubEnv('VERCEL_ENV', undefined)
+  vi.stubEnv('VERCEL_URL', undefined)
+  vi.stubEnv('VERCEL_BRANCH_URL', undefined)
 
   mocks.auth.mockReturnValue({ userId: 'clerk_owner' })
   mocks.getWorkspaceMembership.mockResolvedValue({ workspaceId: 'ws_active', role: 'OWNER' })
@@ -64,6 +72,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const k of ENV_KEYS) {
     if (savedEnv[k] === undefined) delete process.env[k]
     else process.env[k] = savedEnv[k]
@@ -98,6 +107,92 @@ describe('canonical { plan, region, currency } — USD', () => {
     const { status } = await call({ plan: 'AGENCY', region: 'GLOBAL', currency: 'USD' })
     expect(status).toBe(200)
     expect(mocks.sessionsCreate.mock.calls[0][0].line_items[0].price).toBe('price_new_agency')
+  })
+})
+
+describe('success_url / cancel_url — exact trusted origin only', () => {
+  const USD_SOLO = { plan: 'SOLO', region: 'GLOBAL', currency: 'USD' }
+
+  function returnUrls() {
+    expect(mocks.sessionsCreate).toHaveBeenCalledTimes(1)
+    const { success_url, cancel_url } = mocks.sessionsCreate.mock.calls[0][0]
+    return { success_url, cancel_url }
+  }
+
+  function preview() {
+    vi.stubEnv('VERCEL_ENV', 'preview')
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('VERCEL_URL', new URL(PREVIEW_ORIGIN).host)
+    vi.stubEnv('VERCEL_BRANCH_URL', new URL(BRANCH_ORIGIN).host)
+  }
+
+  it('production → production domain', async () => {
+    vi.stubEnv('VERCEL_ENV', 'production')
+    vi.stubEnv('NODE_ENV', 'production')
+    expect((await call(USD_SOLO, PRODUCTION_ORIGIN)).status).toBe(200)
+    expect(returnUrls()).toEqual({
+      success_url: `${PRODUCTION_ORIGIN}/dashboard/billing?success=true`,
+      cancel_url:  `${PRODUCTION_ORIGIN}/dashboard/billing`,
+    })
+  })
+
+  it('NEXT_PUBLIC_APP_URL no longer decides the return origin', async () => {
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://app.example')
+    await call(USD_SOLO, PRODUCTION_ORIGIN)
+    expect(returnUrls().success_url).toBe(`${PRODUCTION_ORIGIN}/dashboard/billing?success=true`)
+  })
+
+  it('preview deployment URL → that exact deployment URL', async () => {
+    preview()
+    await call(USD_SOLO, PREVIEW_ORIGIN)
+    expect(returnUrls()).toEqual({
+      success_url: `${PREVIEW_ORIGIN}/dashboard/billing?success=true`,
+      cancel_url:  `${PREVIEW_ORIGIN}/dashboard/billing`,
+    })
+  })
+
+  it('preview branch URL → that exact branch URL', async () => {
+    preview()
+    await call(USD_SOLO, BRANCH_ORIGIN)
+    expect(returnUrls()).toEqual({
+      success_url: `${BRANCH_ORIGIN}/dashboard/billing?success=true`,
+      cancel_url:  `${BRANCH_ORIGIN}/dashboard/billing`,
+    })
+  })
+
+  it('localhost works in development', async () => {
+    vi.stubEnv('NODE_ENV', 'development')
+    await call(USD_SOLO, 'http://localhost:3000')
+    expect(returnUrls()).toEqual({
+      success_url: 'http://localhost:3000/dashboard/billing?success=true',
+      cancel_url:  'http://localhost:3000/dashboard/billing',
+    })
+  })
+
+  it('localhost outside development → production domain', async () => {
+    vi.stubEnv('VERCEL_ENV', 'production')
+    vi.stubEnv('NODE_ENV', 'production')
+    await call(USD_SOLO, 'http://localhost:3000')
+    expect(returnUrls().cancel_url).toBe(`${PRODUCTION_ORIGIN}/dashboard/billing`)
+  })
+
+  it.each([
+    'https://evil.example',
+    'https://qbrdeck-other999-techtonits-7492s-projects.vercel.app',
+    'https://attacker.vercel.app',
+  ])('preview: untrusted origin %s → production domain', async origin => {
+    preview()
+    await call(USD_SOLO, origin)
+    expect(returnUrls()).toEqual({
+      success_url: `${PRODUCTION_ORIGIN}/dashboard/billing?success=true`,
+      cancel_url:  `${PRODUCTION_ORIGIN}/dashboard/billing`,
+    })
+  })
+
+  it('client-supplied success_url / cancel_url are rejected, never honoured', async () => {
+    const { status } = await call({ ...USD_SOLO, success_url: 'https://evil.example', cancel_url: 'https://evil.example' })
+    expect(status).toBe(400)
+    expectNoStripe()
   })
 })
 

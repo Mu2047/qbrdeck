@@ -23,9 +23,13 @@ vi.mock('@/lib/stripe', () => ({
 
 import { POST } from '@/app/api/billing/portal/route'
 
-const APP_URL = 'https://app.example'
+// The return origin comes from the request, checked against lib/app-origin.ts.
+// NEXT_PUBLIC_APP_URL is set to something else to prove it is no longer read.
+const APP_URL        = 'https://qbrdeck.misecuretechsolutions.com'
+const PREVIEW_ORIGIN = 'https://qbrdeck-jql1ygh2r-techtonits-7492s-projects.vercel.app'
+const BRANCH_ORIGIN  = 'https://qbrdeck-git-feat-regional-pricing-techtonits-7492s-projects.vercel.app'
 const ENV = {
-  NEXT_PUBLIC_APP_URL: APP_URL,
+  NEXT_PUBLIC_APP_URL: 'https://app.example',
   STRIPE_PRICE_SOLO_USD: 'price_usd_solo', STRIPE_PRICE_GROWTH_USD: 'price_usd_growth', STRIPE_PRICE_AGENCY_USD: 'price_usd_agency',
   STRIPE_PRICE_SOLO_GMD: 'price_gmd_solo', STRIPE_PRICE_GROWTH_GMD: 'price_gmd_growth', STRIPE_PRICE_AGENCY_GMD: 'price_gmd_agency',
   STRIPE_PRICE_SOLO_XOF: 'price_xof_solo', STRIPE_PRICE_GROWTH_XOF: 'price_xof_growth', STRIPE_PRICE_AGENCY_XOF: 'price_xof_agency',
@@ -61,6 +65,9 @@ function sessionArgs() {
 beforeEach(() => {
   for (const k of ENV_KEYS) { savedEnv[k] = process.env[k]; delete process.env[k] }
   Object.assign(process.env, ENV)
+  vi.stubEnv('VERCEL_ENV', undefined)
+  vi.stubEnv('VERCEL_URL', undefined)
+  vi.stubEnv('VERCEL_BRANCH_URL', undefined)
 
   mocks.auth.mockReturnValue({ userId: 'clerk_owner' })
   mocks.getWorkspaceMembership.mockResolvedValue({ workspaceId: 'ws_active', role: 'OWNER' })
@@ -70,6 +77,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const k of ENV_KEYS) {
     if (savedEnv[k] === undefined) delete process.env[k]
     else process.env[k] = savedEnv[k]
@@ -111,6 +119,59 @@ describe('currency-specific portal configuration', () => {
     mocks.subscriptionFindUnique.mockResolvedValue(row('price_legacy_solo'))
     expect((await call()).status).toBe(200)
     expect(sessionArgs().configuration).toBe('bpc_usd')
+  })
+})
+
+describe('return_url — exact trusted origin only', () => {
+  const portalUrl = (origin: string) => `${origin}/api/billing/portal`
+
+  function preview() {
+    vi.stubEnv('VERCEL_ENV', 'preview')
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('VERCEL_URL', new URL(PREVIEW_ORIGIN).host)
+    vi.stubEnv('VERCEL_BRANCH_URL', new URL(BRANCH_ORIGIN).host)
+  }
+
+  it('production → production domain', async () => {
+    vi.stubEnv('VERCEL_ENV', 'production')
+    vi.stubEnv('NODE_ENV', 'production')
+    await call(request({}, portalUrl(APP_URL)))
+    expect(sessionArgs().return_url).toBe(`${APP_URL}/dashboard/settings`)
+  })
+
+  it('preview deployment URL → that exact deployment URL', async () => {
+    preview()
+    await call(request({}, portalUrl(PREVIEW_ORIGIN)))
+    expect(sessionArgs().return_url).toBe(`${PREVIEW_ORIGIN}/dashboard/settings`)
+  })
+
+  it('preview branch URL → that exact branch URL', async () => {
+    preview()
+    await call(request({}, portalUrl(BRANCH_ORIGIN)))
+    expect(sessionArgs().return_url).toBe(`${BRANCH_ORIGIN}/dashboard/settings`)
+  })
+
+  it('localhost works in development only', async () => {
+    vi.stubEnv('NODE_ENV', 'development')
+    await call(request({}, portalUrl('http://localhost:3000')))
+    expect(sessionArgs().return_url).toBe('http://localhost:3000/dashboard/settings')
+  })
+
+  it('localhost outside development → production domain', async () => {
+    vi.stubEnv('VERCEL_ENV', 'production')
+    vi.stubEnv('NODE_ENV', 'production')
+    await call(request({}, portalUrl('http://localhost:3000')))
+    expect(sessionArgs().return_url).toBe(`${APP_URL}/dashboard/settings`)
+  })
+
+  it.each([
+    'https://evil.example',
+    'https://app.example',
+    'https://qbrdeck-other999-techtonits-7492s-projects.vercel.app',
+  ])('preview: untrusted origin %s → production domain', async origin => {
+    preview()
+    await call(request({}, portalUrl(origin)))
+    expect(sessionArgs().return_url).toBe(`${APP_URL}/dashboard/settings`)
   })
 })
 

@@ -77,9 +77,9 @@ import { getEffectivePlan, hasPaidAccess, type SubscriptionAccess } from '@/lib/
 import { hasLivePaidSubscription } from '@/lib/billing/checkout-request'
 
 const WS = 'ws_active'
-const APP_URL = 'https://app.example'
+const APP_URL = 'https://qbrdeck.misecuretechsolutions.com'
 const ENV = {
-  NEXT_PUBLIC_APP_URL: APP_URL,
+  NEXT_PUBLIC_APP_URL: 'https://app.example',
   STRIPE_PRICE_SOLO_USD: 'price_usd_solo', STRIPE_PRICE_GROWTH_USD: 'price_usd_growth', STRIPE_PRICE_AGENCY_USD: 'price_usd_agency',
   STRIPE_PRICE_SOLO_GMD: 'price_gmd_solo', STRIPE_PRICE_GROWTH_GMD: 'price_gmd_growth', STRIPE_PRICE_AGENCY_GMD: 'price_gmd_agency',
   STRIPE_PRICE_SOLO_XOF: 'price_xof_solo', STRIPE_PRICE_GROWTH_XOF: 'price_xof_growth', STRIPE_PRICE_AGENCY_XOF: 'price_xof_agency',
@@ -112,7 +112,8 @@ async function deliver(type: string, object: unknown, id = `evt_${type}`) {
 }
 
 async function openPortal() {
-  const res = await portal({ json: async () => ({}) } as any)
+  const url = `${APP_URL}/api/billing/portal`
+  const res = await portal({ json: async () => ({}), url, nextUrl: new URL(url) } as any)
   return { status: res.status, data: await res.json() }
 }
 
