@@ -46,13 +46,21 @@ const PRODUCTION_ORIGIN = 'https://qbrdeck.misecuretechsolutions.com'
 const PREVIEW_ORIGIN    = 'https://qbrdeck-jql1ygh2r-techtonits-7492s-projects.vercel.app'
 const BRANCH_ORIGIN     = 'https://qbrdeck-git-feat-regional-pricing-techtonits-7492s-projects.vercel.app'
 
-function request(body: unknown, origin = PRODUCTION_ORIGIN) {
-  const url = `${origin}/api/billing/checkout`
-  return { json: async () => body, url, nextUrl: new URL(url) } as any
+// The headers a browser POST through Vercel carries for `origin`. nextUrl is the
+// server's internal address, as Next builds it in a Node route handler.
+function browserHeaders(origin: string): Record<string, string> {
+  const { host, protocol } = new URL(origin)
+  return { origin, host, 'x-forwarded-host': host, 'x-forwarded-proto': protocol.replace(':', '') }
 }
 
-async function call(body: unknown, origin?: string) {
-  const res  = await POST(request(body, origin))
+function request(body: unknown, headers: Record<string, string> = browserHeaders(PRODUCTION_ORIGIN)) {
+  const url = 'http://localhost:3000/api/billing/checkout'
+  return { json: async () => body, url, nextUrl: new URL(url), headers: new Headers(headers) } as any
+}
+
+async function call(body: unknown, origin?: string | Record<string, string>) {
+  const headers = typeof origin === 'string' ? browserHeaders(origin) : origin
+  const res  = await POST(request(body, headers))
   return { status: res.status, data: await res.json() }
 }
 
@@ -180,9 +188,31 @@ describe('success_url / cancel_url — exact trusted origin only', () => {
     'https://evil.example',
     'https://qbrdeck-other999-techtonits-7492s-projects.vercel.app',
     'https://attacker.vercel.app',
+    `http://${new URL(PREVIEW_ORIGIN).host}`,
   ])('preview: untrusted origin %s → production domain', async origin => {
     preview()
     await call(USD_SOLO, origin)
+    expect(returnUrls()).toEqual({
+      success_url: `${PRODUCTION_ORIGIN}/dashboard/billing?success=true`,
+      cancel_url:  `${PRODUCTION_ORIGIN}/dashboard/billing`,
+    })
+  })
+
+  it('preview: malicious Origin header with a trusted Vercel host → that trusted host', async () => {
+    preview()
+    await call(USD_SOLO, { ...browserHeaders(PREVIEW_ORIGIN), origin: 'https://evil.example' })
+    expect(returnUrls().success_url).toBe(`${PREVIEW_ORIGIN}/dashboard/billing?success=true`)
+  })
+
+  it('preview: malicious host and x-forwarded-host → production domain', async () => {
+    preview()
+    await call(USD_SOLO, { host: 'evil.example', 'x-forwarded-host': 'evil.example', 'x-forwarded-proto': 'https' })
+    expect(returnUrls().cancel_url).toBe(`${PRODUCTION_ORIGIN}/dashboard/billing`)
+  })
+
+  it('preview: no origin headers at all → production domain', async () => {
+    preview()
+    await call(USD_SOLO, {})
     expect(returnUrls()).toEqual({
       success_url: `${PRODUCTION_ORIGIN}/dashboard/billing?success=true`,
       cancel_url:  `${PRODUCTION_ORIGIN}/dashboard/billing`,

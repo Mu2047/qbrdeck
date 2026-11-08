@@ -47,9 +47,19 @@ function row(stripePriceId: string | null, stripeCustomerId = 'cus_active') {
   return { stripeCustomerId, stripePriceId }
 }
 
-// The route must not read either of these; they exist to prove it.
-function request(body: unknown = {}, url = `${APP_URL}/api/billing/portal`) {
-  return { json: vi.fn(async () => body), url, nextUrl: new URL(url) } as any
+// The route must not read the body or query; they exist to prove it. `url` is
+// the browser-visible URL: its origin becomes the Origin/host/x-forwarded-*
+// headers a browser POST through Vercel carries. nextUrl is the server's
+// internal address, as Next builds it in a Node route handler.
+function request(body: unknown = {}, url = `${APP_URL}/api/billing/portal`, headers?: Record<string, string>) {
+  const { origin, host, protocol } = new URL(url)
+  const internal = `http://localhost:3000${new URL(url).pathname}`
+  return {
+    json:    vi.fn(async () => body),
+    url:     internal,
+    nextUrl: new URL(internal),
+    headers: new Headers(headers ?? { origin, host, 'x-forwarded-host': host, 'x-forwarded-proto': protocol.replace(':', '') }),
+  } as any
 }
 
 async function call(req = request()) {
@@ -168,9 +178,29 @@ describe('return_url — exact trusted origin only', () => {
     'https://evil.example',
     'https://app.example',
     'https://qbrdeck-other999-techtonits-7492s-projects.vercel.app',
+    `http://${new URL(PREVIEW_ORIGIN).host}`,
   ])('preview: untrusted origin %s → production domain', async origin => {
     preview()
     await call(request({}, portalUrl(origin)))
+    expect(sessionArgs().return_url).toBe(`${APP_URL}/dashboard/settings`)
+  })
+
+  it('preview: malicious Origin header with a trusted Vercel host → that trusted host', async () => {
+    preview()
+    const host = new URL(PREVIEW_ORIGIN).host
+    await call(request({}, portalUrl(PREVIEW_ORIGIN), { origin: 'https://evil.example', host, 'x-forwarded-host': host, 'x-forwarded-proto': 'https' }))
+    expect(sessionArgs().return_url).toBe(`${PREVIEW_ORIGIN}/dashboard/settings`)
+  })
+
+  it('preview: malicious host and x-forwarded-host → production domain', async () => {
+    preview()
+    await call(request({}, portalUrl(PREVIEW_ORIGIN), { host: 'evil.example', 'x-forwarded-host': 'evil.example', 'x-forwarded-proto': 'https' }))
+    expect(sessionArgs().return_url).toBe(`${APP_URL}/dashboard/settings`)
+  })
+
+  it('preview: no origin headers at all → production domain', async () => {
+    preview()
+    await call(request({}, portalUrl(PREVIEW_ORIGIN), {}))
     expect(sessionArgs().return_url).toBe(`${APP_URL}/dashboard/settings`)
   })
 })

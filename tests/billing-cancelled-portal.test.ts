@@ -113,7 +113,13 @@ async function deliver(type: string, object: unknown, id = `evt_${type}`) {
 
 async function openPortal() {
   const url = `${APP_URL}/api/billing/portal`
-  const res = await portal({ json: async () => ({}), url, nextUrl: new URL(url) } as any)
+  const headers = new Headers({
+    origin:              'https://qbrdeck.misecuretechsolutions.com',
+    host:                'qbrdeck.misecuretechsolutions.com',
+    'x-forwarded-host':  'qbrdeck.misecuretechsolutions.com',
+    'x-forwarded-proto': 'https',
+  })
+  const res = await portal({ json: async () => ({}), url, nextUrl: new URL(url), headers } as any)
   return { status: res.status, data: await res.json() }
 }
 

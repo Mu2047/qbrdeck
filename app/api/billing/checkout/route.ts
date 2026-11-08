@@ -9,7 +9,7 @@ import {
   hasLivePaidSubscription,
   EXISTING_SUBSCRIPTION_MESSAGE,
 } from '@/lib/billing/checkout-request'
-import { resolveAppOrigin, getAuthorizedParties } from '@/lib/app-origin'
+import { resolveAppOrigin } from '@/lib/app-origin'
 
 export async function POST(req: NextRequest) {
   try {
@@ -51,25 +51,6 @@ export async function POST(req: NextRequest) {
 
     // Return to the exact trusted origin checkout started from (see lib/app-origin.ts).
     const appOrigin = resolveAppOrigin(req)
-
-    // TEMPORARY: Preview-only origin diagnostics. Hostnames and env names only —
-    // no cookies, auth headers, tokens, keys or customer data. Remove after verification.
-    if (process.env.VERCEL_ENV === 'preview') {
-      console.log('[checkout-origin-debug]', JSON.stringify({
-        reqUrl:            req.url,
-        nextUrlOrigin:     req.nextUrl.origin,
-        host:              req.headers.get('host'),
-        xForwardedHost:    req.headers.get('x-forwarded-host'),
-        xForwardedProto:   req.headers.get('x-forwarded-proto'),
-        origin:            req.headers.get('origin'),
-        vercelDeployment:  req.headers.get('x-vercel-deployment-url'),
-        VERCEL_ENV:        process.env.VERCEL_ENV,
-        VERCEL_URL:        process.env.VERCEL_URL,
-        VERCEL_BRANCH_URL: process.env.VERCEL_BRANCH_URL,
-        authorizedParties: getAuthorizedParties(),
-        resolved:          appOrigin,
-      }))
-    }
 
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
