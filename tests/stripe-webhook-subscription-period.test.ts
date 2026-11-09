@@ -100,8 +100,16 @@ describe('webhook route — all three period-reading handlers use the shared hel
     expect(fn).not.toMatch(/new Date\(sub\.current_period_end/)
   })
 
-  it('handleSubscriptionUpdated derives its period from getSubscriptionPeriod and still sets plan/status/ids alongside it', () => {
+  it('handleSubscriptionUpdated re-fetches the subscription and writes only through applySubscriptionState', () => {
     const fn = routeSource.match(/async function handleSubscriptionUpdated[\s\S]*?\n}\n/)?.[0] ?? ''
+    expect(fn).toMatch(/const sub\s*=\s*await stripe\.subscriptions\.retrieve\(eventSub\.id\)/)
+    expect(fn).toMatch(/decideAuthority\(storedId, sub\)/)
+    expect(fn).toMatch(/applySubscriptionState\(workspaceId, sub, storedId\)/)
+    expect(fn).not.toMatch(/prisma\.subscription\.update/)
+  })
+
+  it('applySubscriptionState (shared by updated, checkout and deleted-adoption) derives its period from getSubscriptionPeriod and sets plan/status/ids alongside it', () => {
+    const fn = routeSource.match(/async function applySubscriptionState[\s\S]*?\n}\n/)?.[0] ?? ''
     expect(fn).toMatch(/const period\s*=\s*getSubscriptionPeriod\(sub, priceId\)/)
     expect(fn).toMatch(/plan,/)
     expect(fn).toMatch(/stripeStatus:\s*sub\.status/)

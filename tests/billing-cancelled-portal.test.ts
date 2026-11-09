@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   getWorkspaceMembership: vi.fn(),
   constructEvent:        vi.fn(),
   subscriptionsRetrieve: vi.fn(),
+  subscriptionsList:     vi.fn(),
   customersRetrieve:     vi.fn(),
   portalSessionsCreate:  vi.fn(),
 }))
@@ -36,7 +37,7 @@ vi.mock('@/lib/workspace', () => ({ getWorkspaceMembership: mocks.getWorkspaceMe
 vi.mock('@/lib/stripe', () => ({
   stripe: {
     webhooks:      { constructEvent: mocks.constructEvent },
-    subscriptions: { retrieve: mocks.subscriptionsRetrieve },
+    subscriptions: { retrieve: mocks.subscriptionsRetrieve, list: mocks.subscriptionsList },
     customers:     { retrieve: mocks.customersRetrieve },
     billingPortal: { sessions: { create: mocks.portalSessionsCreate } },
   },
@@ -65,6 +66,19 @@ vi.mock('@/lib/prisma', () => {
           const next = current ? { ...current, ...update } : { ...create }
           mocks.rows.set(where.workspaceId, next)
           return next
+        }),
+        // Conditional write: only applies while the stored subscription id
+        // still equals the expected one, like the real WHERE clause.
+        updateMany: vi.fn(async ({ where, data }: any) => {
+          const current = mocks.rows.get(where.workspaceId)
+          if (!current || (current.stripeSubscriptionId ?? null) !== (where.stripeSubscriptionId ?? null)) return { count: 0 }
+          mocks.rows.set(where.workspaceId, { ...current, ...data })
+          return { count: 1 }
+        }),
+        create: vi.fn(async ({ data }: any) => {
+          if (mocks.rows.has(data.workspaceId)) throw new Error('Unique constraint failed on workspaceId')
+          mocks.rows.set(data.workspaceId, { ...data })
+          return data
         }),
       },
     },
@@ -132,7 +146,9 @@ beforeEach(() => {
   mocks.auth.mockReturnValue({ userId: 'clerk_owner' })
   mocks.getWorkspaceMembership.mockResolvedValue({ workspaceId: WS, role: 'OWNER' })
   mocks.portalSessionsCreate.mockResolvedValue({ url: 'https://portal.example/session' })
+  mocks.subscriptionsList.mockResolvedValue({ data: [], has_more: false })
   vi.spyOn(console, 'error').mockImplementation(() => {})
+  vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'log').mockImplementation(() => {})
 })
 
@@ -220,6 +236,54 @@ describe('formerly-paid FREE workspace keeps its currency-specific portal', () =
     expect(hasLivePaidSubscription(row())).toBe(true)
     await openPortal()
     expect(mocks.portalSessionsCreate.mock.calls[0][0].configuration).toBe('bpc_usd')
+  })
+})
+
+describe('subscription authority across webhook arrival order (lifecycle)', () => {
+  const live = (id: string, priceId: string, created: number) =>
+    ({ ...stripeSubscription(priceId, 'active'), id, created })
+
+  it('old active → new active → delayed old updated: the new subscription stays current', async () => {
+    const stripeState = new Map<string, any>([
+      ['sub_old', live('sub_old', 'price_usd_growth', 1000)],
+      ['sub_new', live('sub_new', 'price_usd_agency', 2000)],
+    ])
+    mocks.subscriptionsRetrieve.mockImplementation(async (id: string) => stripeState.get(id))
+    mocks.rows.set(WS, {
+      ...paidRow('FREE', ''), stripeSubscriptionId: null, stripePriceId: null, status: 'canceled', stripeStatus: 'canceled',
+    })
+
+    await deliver('checkout.session.completed', { customer: 'cus_paid', subscription: 'sub_old', metadata: { workspaceId: WS } }, 'evt_co_old')
+    expect(row()).toMatchObject({ stripeSubscriptionId: 'sub_old', plan: 'GROWTH' })
+
+    await deliver('checkout.session.completed', { customer: 'cus_paid', subscription: 'sub_new', metadata: { workspaceId: WS } }, 'evt_co_new')
+    expect(row()).toMatchObject({ stripeSubscriptionId: 'sub_new', plan: 'AGENCY' })
+
+    // sub_old is STILL active in Stripe when its delayed update arrives.
+    await deliver('customer.subscription.updated', stripeState.get('sub_old'), 'evt_old_updated_late')
+    expect(row()).toMatchObject({ stripeSubscriptionId: 'sub_new', plan: 'AGENCY', stripePriceId: 'price_usd_agency' })
+    expect(hasLivePaidSubscription(row())).toBe(true)
+    expect(getEffectivePlan(row())).toBe('AGENCY')
+  })
+
+  it('current deleted while a newer live one exists: moves straight to it; its later checkout does not reset usage again', async () => {
+    const subNew = live('sub_new', 'price_usd_agency', 2000)
+    mocks.rows.set(WS, { ...paidRow('GROWTH', 'price_usd_growth'), stripeSubscriptionId: 'sub_old', qbrCount: 5, exportCount: 2 })
+    mocks.subscriptionsList.mockResolvedValue({ data: [subNew], has_more: false })
+    mocks.subscriptionsRetrieve.mockResolvedValue(subNew)
+
+    const { prisma } = await import('@/lib/prisma')
+    const updateMany = prisma.subscription.updateMany as unknown as ReturnType<typeof vi.fn>
+
+    await deliver('customer.subscription.deleted', { ...stripeSubscription('price_usd_growth', 'canceled'), id: 'sub_old', created: 1000 }, 'evt_old_deleted')
+    expect(updateMany.mock.calls.some(([args]: any) => args.data.plan === 'FREE')).toBe(false)
+    expect(row()).toMatchObject({ stripeSubscriptionId: 'sub_new', plan: 'AGENCY', qbrCount: 0, exportCount: 0 })
+    expect(hasPaidAccess(row())).toBe(true)
+
+    // Usage happens on the adopted subscription, then sub_new's own checkout lands.
+    mocks.rows.set(WS, { ...row(), qbrCount: 2 })
+    await deliver('checkout.session.completed', { customer: 'cus_paid', subscription: 'sub_new', metadata: { workspaceId: WS } }, 'evt_co_new_late')
+    expect(row()).toMatchObject({ stripeSubscriptionId: 'sub_new', plan: 'AGENCY', qbrCount: 2, exportCount: 0 })
   })
 })
 
