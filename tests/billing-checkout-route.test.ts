@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   subscriptionFindUnique:   vi.fn(),
   createOrRetrieveCustomer: vi.fn(),
   sessionsCreate:           vi.fn(),
+  pricesRetrieve:           vi.fn(),
 }))
 
 vi.mock('@clerk/nextjs/server', () => ({ auth: mocks.auth }))
@@ -23,7 +24,10 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 vi.mock('@/lib/stripe', () => ({
-  stripe: { checkout: { sessions: { create: mocks.sessionsCreate } } },
+  stripe: {
+    checkout: { sessions: { create: mocks.sessionsCreate } },
+    prices:   { retrieve: mocks.pricesRetrieve },
+  },
   createOrRetrieveCustomer: mocks.createOrRetrieveCustomer,
 }))
 
@@ -70,6 +74,7 @@ beforeEach(() => {
   vi.stubEnv('VERCEL_ENV', undefined)
   vi.stubEnv('VERCEL_URL', undefined)
   vi.stubEnv('VERCEL_BRANCH_URL', undefined)
+  vi.stubEnv('BILLING_PREVIEW_REGIONS', undefined)
 
   mocks.auth.mockReturnValue({ userId: 'clerk_owner' })
   mocks.getWorkspaceMembership.mockResolvedValue({ workspaceId: 'ws_active', role: 'OWNER' })
@@ -91,6 +96,34 @@ afterEach(() => {
 function expectNoStripe() {
   expect(mocks.createOrRetrieveCustomer).not.toHaveBeenCalled()
   expect(mocks.sessionsCreate).not.toHaveBeenCalled()
+}
+
+// ── Preview-only GMD certification fixtures ──────────────────────────────────
+
+const GMD_ENV = {
+  STRIPE_PRICE_SOLO_GMD:   'price_gmd_solo',
+  STRIPE_PRICE_GROWTH_GMD: 'price_gmd_growth',
+  STRIPE_PRICE_AGENCY_GMD: 'price_gmd_agency',
+}
+const GMD_AMOUNTS: Record<string, number> = {
+  price_gmd_solo: 200_000, price_gmd_growth: 400_000, price_gmd_agency: 750_000,
+}
+
+// A correct Stripe Price for a configured GMD Price ID.
+function stripeGmdPrice(id: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id, active: true, currency: 'gmd', unit_amount: GMD_AMOUNTS[id], type: 'recurring',
+    recurring: { interval: 'month', interval_count: 1 },
+    ...overrides,
+  }
+}
+
+// `null` = BILLING_PREVIEW_REGIONS unset (undefined would hit the default).
+function previewWithGm(flag: string | null = 'GM') {
+  vi.stubEnv('VERCEL_ENV', 'preview')
+  vi.stubEnv('BILLING_PREVIEW_REGIONS', flag ?? undefined)
+  Object.assign(process.env, GMD_ENV)
+  mocks.pricesRetrieve.mockImplementation(async (id: string) => stripeGmdPrice(id))
 }
 
 describe('canonical { plan, region, currency } — USD', () => {
@@ -354,5 +387,156 @@ describe('paid-subscription guard', () => {
     mocks.subscriptionFindUnique.mockResolvedValue({ plan: 'SOLO', status: 'active', stripeStatus: 'active', stripeSubscriptionId: 'sub_1' })
     expect((await call({ priceId: 'price_live_agency' })).status).toBe(409)
     expectNoStripe()
+  })
+})
+
+describe('Preview-only GMD checkout (VERCEL_ENV=preview AND BILLING_PREVIEW_REGIONS=GM)', () => {
+  const GM_SOLO   = { plan: 'SOLO',   region: 'GM', currency: 'GMD' }
+  const GM_GROWTH = { plan: 'GROWTH', region: 'GM', currency: 'GMD' }
+
+  function expectNoStripeAtAll() {
+    expectNoStripe()
+    expect(mocks.pricesRetrieve).not.toHaveBeenCalled()
+  }
+
+  it('A. Production rejects GM even with BILLING_PREVIEW_REGIONS=GM and all GMD prices set', async () => {
+    previewWithGm()
+    vi.stubEnv('VERCEL_ENV', 'production')
+    expect((await call(GM_SOLO)).status).toBe(400)
+    expectNoStripeAtAll()
+  })
+
+  it.each([null, ''])('B. Preview without the flag (%j) rejects GM', async (flag) => {
+    previewWithGm(flag)
+    expect((await call(GM_SOLO)).status).toBe(400)
+    expectNoStripeAtAll()
+  })
+
+  it.each([undefined, 'development', 'staging', 'Preview'])('B. VERCEL_ENV=%j with the flag still rejects GM', async (vercelEnv) => {
+    previewWithGm()
+    vi.stubEnv('VERCEL_ENV', vercelEnv)
+    expect((await call(GM_SOLO)).status).toBe(400)
+    expectNoStripeAtAll()
+  })
+
+  it('C. Preview + flag + complete valid config accepts GM and creates a GMD session', async () => {
+    previewWithGm()
+    const { status, data } = await call(GM_GROWTH, browserHeaders(PREVIEW_ORIGIN))
+    expect(status).toBe(200)
+    expect(data.url).toBe('https://checkout.example/session')
+    expect(mocks.pricesRetrieve).toHaveBeenCalledWith('price_gmd_growth')
+    const session = mocks.sessionsCreate.mock.calls[0][0]
+    expect(session.line_items).toEqual([{ price: 'price_gmd_growth', quantity: 1 }])
+    expect(session.metadata).toMatchObject({ plan: 'GROWTH', region: 'GM', currency: 'GMD' })
+  })
+
+  it.each(['XOF_ZONE', 'GM,XOF_ZONE', 'XOF'])('D. flag %j never enables XOF', async (flag) => {
+    previewWithGm(flag)
+    Object.assign(process.env, {
+      STRIPE_PRICE_SOLO_XOF: 'price_xof_solo', STRIPE_PRICE_GROWTH_XOF: 'price_xof_growth', STRIPE_PRICE_AGENCY_XOF: 'price_xof_agency',
+    })
+    expect((await call({ plan: 'SOLO', region: 'XOF_ZONE', currency: 'XOF' })).status).toBe(400)
+    expectNoStripeAtAll()
+  })
+
+  it.each(['gm', 'Gm', 'GMD', 'GAMBIA', '*', 'ALL', 'GLOBAL'])('E. unknown or inexact flag value %j does not enable GM', async (flag) => {
+    previewWithGm(flag)
+    expect((await call(GM_SOLO)).status).toBe(400)
+    expectNoStripeAtAll()
+  })
+
+  it('E. flag parsing tolerates whitespace around exact codes', async () => {
+    previewWithGm(' GLOBAL , GM ')
+    expect((await call(GM_SOLO)).status).toBe(200)
+  })
+
+  it.each(['STRIPE_PRICE_SOLO_GMD', 'STRIPE_PRICE_GROWTH_GMD', 'STRIPE_PRICE_AGENCY_GMD'])(
+    'F. missing %s rejects every GM plan, not just that one',
+    async (missing) => {
+      previewWithGm()
+      delete process.env[missing]
+      for (const plan of ['SOLO', 'GROWTH', 'AGENCY']) {
+        expect((await call({ plan, region: 'GM', currency: 'GMD' })).status).toBe(400)
+      }
+      expectNoStripeAtAll()
+    },
+  )
+
+  it('G. a GMD price duplicating a USD price fails closed (500) for GM and USD alike', async () => {
+    previewWithGm()
+    process.env.STRIPE_PRICE_GROWTH_GMD = 'price_live_growth'
+    expect((await call(GM_GROWTH)).status).toBe(500)
+    expect((await call({ plan: 'GROWTH', region: 'GLOBAL', currency: 'USD' })).status).toBe(500)
+    expectNoStripeAtAll()
+  })
+
+  it('G. two GMD plans sharing one price fails closed (500)', async () => {
+    previewWithGm()
+    process.env.STRIPE_PRICE_AGENCY_GMD = 'price_gmd_solo'
+    expect((await call(GM_SOLO)).status).toBe(500)
+    expectNoStripeAtAll()
+  })
+
+  it.each([
+    ['H. USD currency',        { currency: 'usd' }],
+    ['I. wrong amount',        { unit_amount: 40_000 }],
+    ['I. null amount',         { unit_amount: null }],
+    ['J. inactive',            { active: false }],
+    ['J. yearly interval',     { recurring: { interval: 'year', interval_count: 1 } }],
+    ['J. every 3 months',      { recurring: { interval: 'month', interval_count: 3 } }],
+    ['J. one-time price',      { type: 'one_time', recurring: null }],
+  ])('%s on the Stripe Price → 500, no customer or session', async (_label, overrides) => {
+    previewWithGm()
+    mocks.pricesRetrieve.mockImplementation(async (id: string) => stripeGmdPrice(id, overrides))
+    const { status, data } = await call(GM_GROWTH)
+    expect(status).toBe(500)
+    expect(data.error).toBe('Billing is temporarily unavailable')
+    expect(mocks.pricesRetrieve).toHaveBeenCalledWith('price_gmd_growth')
+    expectNoStripe()
+  })
+
+  it('J. a Stripe error retrieving the price fails closed', async () => {
+    previewWithGm()
+    mocks.pricesRetrieve.mockRejectedValue(Object.assign(new Error('No such price'), { code: 'resource_missing' }))
+    expect((await call(GM_SOLO)).status).toBe(500)
+    expectNoStripe()
+  })
+
+  it('K. paid USD workspace → 409 SUBSCRIPTION_EXISTS, no Stripe call of any kind', async () => {
+    previewWithGm()
+    mocks.subscriptionFindUnique.mockResolvedValue({ plan: 'GROWTH', status: 'active', stripeStatus: 'active', stripeSubscriptionId: 'sub_usd' })
+    const { status, data } = await call(GM_SOLO)
+    expect(status).toBe(409)
+    expect(data.code).toBe('SUBSCRIPTION_EXISTS')
+    expectNoStripeAtAll()
+  })
+
+  it('L. Free workspace → exactly one GMD Checkout Session', async () => {
+    previewWithGm()
+    mocks.subscriptionFindUnique.mockResolvedValue(FREE_SUB)
+    expect((await call(GM_SOLO)).status).toBe(200)
+    expect(mocks.createOrRetrieveCustomer).toHaveBeenCalledTimes(1)
+    expect(mocks.sessionsCreate).toHaveBeenCalledTimes(1)
+    expect(mocks.sessionsCreate.mock.calls[0][0].line_items[0].price).toBe('price_gmd_solo')
+  })
+
+  it('currency mismatches stay rejected in Preview', async () => {
+    previewWithGm()
+    expect((await call({ plan: 'SOLO', region: 'GM', currency: 'USD' })).status).toBe(400)
+    expect((await call({ plan: 'SOLO', region: 'GLOBAL', currency: 'GMD' })).status).toBe(400)
+    expectNoStripeAtAll()
+  })
+
+  it('the legacy { priceId } path never accepts a GMD price, even in Preview', async () => {
+    previewWithGm()
+    expect((await call({ priceId: 'price_gmd_solo' })).status).toBe(400)
+    expectNoStripeAtAll()
+  })
+
+  it('USD checkout in Preview is unchanged: no Stripe price lookup', async () => {
+    previewWithGm()
+    expect((await call({ plan: 'SOLO', region: 'GLOBAL', currency: 'USD' })).status).toBe(200)
+    expect(mocks.pricesRetrieve).not.toHaveBeenCalled()
+    expect(mocks.sessionsCreate.mock.calls[0][0].line_items[0].price).toBe('price_live_solo')
   })
 })

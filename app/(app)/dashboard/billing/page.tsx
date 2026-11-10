@@ -2,14 +2,21 @@ import { auth } from '@clerk/nextjs/server'
 import { redirect } from 'next/navigation'
 import { PLAN_LIMITS, PLAN_NAMES, formatLimit, type PlanKey } from '@/lib/limits'
 import { formatPrice } from '@/lib/billing/format-price'
-import { PAID_PLANS, formatRegionalPrice, getAvailableRegions } from '@/lib/billing/regional-prices'
+import { PAID_PLANS, formatRegionalPrice } from '@/lib/billing/regional-prices'
+import { selectableRegions, resolvePageRegion } from '@/lib/billing/checkout-region'
+import { hasLivePaidSubscription } from '@/lib/billing/checkout-request'
+import { REGIONS } from '@/lib/billing/regions'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceContext } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
 import { Check, Zap } from 'lucide-react'
 import { BillingButton } from './billing-button'
 
-export default async function BillingPage() {
+export default async function BillingPage({
+  searchParams,
+}: {
+  searchParams?: { region?: string | string[] }
+}) {
   const { userId } = auth()
   if (!userId) redirect('/sign-in')
 
@@ -40,11 +47,24 @@ export default async function BillingPage() {
   })
   const seatsUsed = memberCount + pendingInviteCount
 
-  // USD only until regional checkout is certified. Amounts come from the
-  // canonical pricing config; checkout is offered only when the server has a
-  // configured, checkout-enabled Stripe Price for the region.
-  const region            = 'GLOBAL' as const
-  const checkoutAvailable = getAvailableRegions().includes(region)
+  // Region comes from server config only: selectableRegions() is ['GLOBAL'] in
+  // Production and in any Preview without BILLING_PREVIEW_REGIONS=GM, so the
+  // ?region= parameter can never select anything else there. The checkout
+  // route re-validates the region regardless. Amounts come from the canonical
+  // pricing config.
+  const regions = selectableRegions()
+
+  // Same live-subscription guard as the checkout route: a paid workspace
+  // never sees the region selector (and its checkout would be refused 409).
+  const guardSub = await prisma.subscription.findUnique({
+    where:  { workspaceId },
+    select: { plan: true, status: true, stripeStatus: true, stripeSubscriptionId: true },
+  })
+  const showRegionSelector = canManageBilling && regions.length > 1 && !hasLivePaidSubscription(guardSub)
+
+  // Without the selector the page is always GLOBAL/USD, whatever ?region= says.
+  const region            = showRegionSelector ? resolvePageRegion(searchParams?.region) : 'GLOBAL'
+  const checkoutAvailable = regions.includes(region)
 
   return (
     <div className="p-8 max-w-5xl">
@@ -99,6 +119,23 @@ export default async function BillingPage() {
         </div>
       </div>
 
+      {/* ── Preview-only billing region selector ─────────────────────────────── */}
+      {showRegionSelector && (
+        <div className="mb-4 flex items-center gap-2 text-sm" aria-label="Billing currency (Preview only)">
+          <span className="text-gray-500">Billing currency (Preview only):</span>
+          {regions.map(code => (
+            <a
+              key={code}
+              href={`/dashboard/billing?region=${code}`}
+              aria-current={code === region ? 'true' : undefined}
+              className={code === region ? 'btn-primary text-xs py-1 px-3' : 'btn-secondary text-xs py-1 px-3'}
+            >
+              {REGIONS[code].currency} — {REGIONS[code].label}
+            </a>
+          ))}
+        </div>
+      )}
+
       {/* ── Plan cards ────────────────────────────────────────────────────────── */}
       <div className="grid md:grid-cols-4 gap-4">
 
@@ -149,7 +186,7 @@ export default async function BillingPage() {
                 ))}
               </ul>
               {canManageBilling ? (
-                <BillingButton planKey={planKey} isCurrent={isCurrent} checkoutAvailable={checkoutAvailable} />
+                <BillingButton planKey={planKey} isCurrent={isCurrent} checkoutAvailable={checkoutAvailable} region={region} />
               ) : isCurrent ? (
                 <button disabled className="btn-secondary w-full justify-center opacity-50 cursor-not-allowed">
                   Current plan

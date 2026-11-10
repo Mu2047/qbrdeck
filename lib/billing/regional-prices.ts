@@ -11,7 +11,8 @@
 //   - Stripe Price IDs come from server env only. The browser never supplies
 //     a Price ID or an amount that the server trusts.
 //   - A region is purchasable only when the region is approved for checkout
-//     in code AND every paid plan has a configured Stripe Price ID.
+//     (in code, or Preview-only via isCheckoutApproved) AND every paid plan
+//     has a configured Stripe Price ID.
 //   - `recognized` (webhook may map it) is separate from `checkoutEnabled`
 //     (new customers may buy it), so a retired/grandfathered price can keep
 //     resolving to its plan after it stops being sold.
@@ -51,6 +52,29 @@ export const CHECKOUT_APPROVED_REGIONS: Record<BillingRegion, boolean> = {
   GLOBAL:   true,
   GM:       false,
   XOF_ZONE: false,
+}
+
+// Preview-only certification. A region listed here becomes purchasable ONLY
+// when BOTH server-side signals hold:
+//   - VERCEL_ENV === 'preview'  (set by the Vercel platform; never the client)
+//   - BILLING_PREVIEW_REGIONS explicitly lists the region (comma-separated)
+// This list is the ceiling: a region missing here (XOF_ZONE) can never be
+// enabled from env, whatever BILLING_PREVIEW_REGIONS contains. Production
+// (VERCEL_ENV === 'production'), local dev and unknown environments ignore
+// BILLING_PREVIEW_REGIONS entirely.
+export const PREVIEW_CHECKOUT_REGIONS: readonly BillingRegion[] = ['GM']
+
+export function previewCheckoutRegions(env: PriceEnv = process.env): BillingRegion[] {
+  if (env.VERCEL_ENV !== 'preview') return []
+  const raw = env.BILLING_PREVIEW_REGIONS
+  if (typeof raw !== 'string') return []
+  const requested = new Set(raw.split(',').map(s => s.trim()).filter(Boolean))
+  // Exact, case-sensitive codes only; unknown values are ignored.
+  return PREVIEW_CHECKOUT_REGIONS.filter(region => requested.has(region))
+}
+
+export function isCheckoutApproved(region: BillingRegion, env: PriceEnv = process.env): boolean {
+  return CHECKOUT_APPROVED_REGIONS[region] === true || previewCheckoutRegions(env).includes(region)
 }
 
 export interface RegionalPrice {
@@ -139,7 +163,7 @@ export function getRegionalPriceTable(env: PriceEnv = process.env): RegionalPric
         currency:        region.currency,
         stripePriceId,
         unitAmountMinor: APPROVED_PRICE_AMOUNTS[region.code][plan],
-        checkoutEnabled: CHECKOUT_APPROVED_REGIONS[region.code] && !!stripePriceId,
+        checkoutEnabled: isCheckoutApproved(region.code, env) && !!stripePriceId,
         recognized:      !!stripePriceId,
       })
     }

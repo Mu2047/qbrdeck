@@ -119,6 +119,23 @@ describe('currencyForStripePrice', () => {
     expect(() => currencyForStripePrice('price_gmd_solo', without(PRICE_ENV, 'STRIPE_PRICE_SOLO_GMD'))).toThrow(UnknownStripePriceError)
   })
 
+  it.each([
+    ['Production',              { ...PRICE_ENV, VERCEL_ENV: 'production', BILLING_PREVIEW_REGIONS: 'GM' }],
+    ['Preview without flag',    { ...PRICE_ENV, VERCEL_ENV: 'preview' }],
+    ['Preview with GM flag',    { ...PRICE_ENV, VERCEL_ENV: 'preview', BILLING_PREVIEW_REGIONS: 'GM' }],
+  ])('S/T. %s: GMD price → STRIPE_PORTAL_CONFIG_GMD, USD price → STRIPE_PORTAL_CONFIG_USD, never crossed', (_label, env) => {
+    const both = { ...env, ...PORTAL_ENV }
+    for (const p of ['price_gmd_solo', 'price_gmd_growth', 'price_gmd_agency']) {
+      expect(portalConfigurationForCurrency(currencyForStripePrice(p, both), both)).toBe('bpc_gmd')
+    }
+    for (const p of ['price_usd_solo', 'price_usd_growth', 'price_usd_agency']) {
+      expect(portalConfigurationForCurrency(currencyForStripePrice(p, both), both)).toBe('bpc_usd')
+    }
+    // GMD configuration missing → error, never the USD configuration.
+    const noGmd = without(both as Record<string, string>, 'STRIPE_PORTAL_CONFIG_GMD')
+    expect(() => portalConfigurationForCurrency(currencyForStripePrice('price_gmd_growth', noGmd), noGmd)).toThrow(PortalConfigError)
+  })
+
   it('invalid price table (same ID in two cells) fails closed', () => {
     expect(() => currencyForStripePrice('price_usd_solo', { ...PRICE_ENV, STRIPE_PRICE_SOLO_GMD: 'price_usd_solo' }))
       .toThrow(BillingConfigError)

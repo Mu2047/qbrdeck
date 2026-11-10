@@ -287,6 +287,48 @@ describe('subscription authority across webhook arrival order (lifecycle)', () =
   })
 })
 
+describe('U. Preview GMD lifecycle: checkout → webhook → portal stays GMD-isolated', () => {
+  it('a GMD subscription lands on its own workspace, opens the GMD portal, and leaves the USD workspace untouched', async () => {
+    vi.stubEnv('VERCEL_ENV', 'preview')
+    vi.stubEnv('BILLING_PREVIEW_REGIONS', 'GM')
+    try {
+      const WS_USD = 'ws_usd_growth'
+      const usdRow = {
+        ...paidRow('GROWTH', 'price_usd_growth'),
+        workspaceId: WS_USD, stripeCustomerId: 'cus_usd', stripeSubscriptionId: 'sub_usd', cancelAtPeriodEnd: false,
+      }
+      mocks.rows.set(WS_USD, { ...usdRow })
+      // The separate GMD test workspace: FREE, its own Stripe customer.
+      mocks.rows.set(WS, {
+        ...paidRow('FREE', ''), stripeCustomerId: 'cus_gmd', stripeSubscriptionId: null, stripePriceId: null,
+        status: 'canceled', stripeStatus: 'canceled', cancelAtPeriodEnd: false,
+      })
+
+      const gmdSub = { ...stripeSubscription('price_gmd_growth', 'active'), id: 'sub_gmd', customer: 'cus_gmd', created: 2000 }
+      mocks.subscriptionsRetrieve.mockResolvedValue(gmdSub)
+      await deliver('checkout.session.completed', { customer: 'cus_gmd', subscription: 'sub_gmd', metadata: { workspaceId: WS } }, 'evt_gmd_checkout')
+
+      expect(row()).toMatchObject({ plan: 'GROWTH', stripeSubscriptionId: 'sub_gmd', stripePriceId: 'price_gmd_growth', stripeCustomerId: 'cus_gmd' })
+      expect(mocks.rows.get(WS_USD)).toEqual(usdRow)
+
+      // GMD workspace → GMD portal configuration, its own customer.
+      await openPortal()
+      expect(mocks.portalSessionsCreate.mock.calls.at(-1)[0]).toMatchObject({ customer: 'cus_gmd', configuration: 'bpc_gmd' })
+
+      // USD workspace → still the USD configuration.
+      mocks.getWorkspaceMembership.mockResolvedValue({ workspaceId: WS_USD, role: 'OWNER' })
+      await openPortal()
+      expect(mocks.portalSessionsCreate.mock.calls.at(-1)[0]).toMatchObject({ customer: 'cus_usd', configuration: 'bpc_usd' })
+
+      // A later GMD webhook for the GMD customer never reaches the USD workspace.
+      await deliver('customer.subscription.updated', gmdSub, 'evt_gmd_updated')
+      expect(mocks.rows.get(WS_USD)).toEqual(usdRow)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+})
+
 describe('never-subscribed FREE workspace is denied the portal', () => {
   it('free_ placeholder row → 404, no Stripe call', async () => {
     mocks.rows.set(WS, {

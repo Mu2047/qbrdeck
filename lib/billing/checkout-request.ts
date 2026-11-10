@@ -18,6 +18,7 @@ import { isBillingCurrency } from './currencies'
 import { isBillingRegion, currencyForRegion } from './regions'
 import {
   BillingConfigError,
+  getAvailableRegions,
   getRegionalPrice,
   getRegionalPriceTable,
   isPaidPlan,
@@ -62,8 +63,16 @@ export function parseCheckoutRequest(body: unknown, env: PriceEnv = process.env)
     if (currencyForRegion(region) !== currency)
       return reject('Currency does not match the selected billing region')
 
+    // getRegionalPrice validates the whole table first, so a duplicated Price
+    // ID throws BillingConfigError (→ 500) before the availability check,
+    // which would otherwise swallow it as "no regions".
     const price = getRegionalPrice(plan, region, env)
     if (!price.checkoutEnabled || !price.stripePriceId)
+      return reject('Checkout is not available for this billing region yet')
+
+    // The WHOLE region must be purchasable — every paid plan configured — not
+    // just the requested plan's cell.
+    if (!getAvailableRegions(env).includes(region))
       return reject('Checkout is not available for this billing region yet')
 
     return { ok: true, price: { ...price, stripePriceId: price.stripePriceId } }
