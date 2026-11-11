@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation'
 import { PLAN_LIMITS, PLAN_NAMES, formatLimit, type PlanKey } from '@/lib/limits'
 import { formatPrice } from '@/lib/billing/format-price'
 import { PAID_PLANS, formatRegionalPrice } from '@/lib/billing/regional-prices'
-import { selectableRegions, resolvePageRegion } from '@/lib/billing/checkout-region'
+import { selectableRegions, resolvePageRegion, displayRegionForStoredPrice } from '@/lib/billing/checkout-region'
 import { hasLivePaidSubscription } from '@/lib/billing/checkout-request'
 import { REGIONS } from '@/lib/billing/regions'
 import { prisma } from '@/lib/prisma'
@@ -60,11 +60,20 @@ export default async function BillingPage({
     where:  { workspaceId },
     select: { plan: true, status: true, stripeStatus: true, stripeSubscriptionId: true },
   })
+  const hasPaidSub         = hasLivePaidSubscription(guardSub)
   const showRegionSelector = canManageBilling && regions.length > 1 && !hasLivePaidSubscription(guardSub)
 
   // Without the selector the page is always GLOBAL/USD, whatever ?region= says.
   const region            = showRegionSelector ? resolvePageRegion(searchParams?.region) : 'GLOBAL'
   const checkoutAvailable = regions.includes(region)
+
+  // Price-card display only. A paid workspace shows the currency of its stored
+  // Stripe Price (unknown/missing → USD); ?region= and the Preview flag never
+  // apply. Checkout region and availability above are unchanged.
+  const storedPrice   = hasPaidSub
+    ? await prisma.subscription.findUnique({ where: { workspaceId }, select: { stripePriceId: true } })
+    : null
+  const displayRegion = hasPaidSub ? displayRegionForStoredPrice(storedPrice?.stripePriceId) : region
 
   return (
     <div className="p-8 max-w-5xl">
@@ -175,7 +184,7 @@ export default async function BillingPage({
                 {isCurrent && <span className="badge-gray">Current</span>}
               </div>
               <div className="mb-5">
-                <span className="text-3xl font-bold text-navy-800">{formatRegionalPrice(planKey, region)}</span>
+                <span className="text-3xl font-bold text-navy-800">{formatRegionalPrice(planKey, displayRegion)}</span>
                 <span className="text-gray-400 text-sm">/month</span>
               </div>
               <ul className="space-y-2 mb-6 flex-1">

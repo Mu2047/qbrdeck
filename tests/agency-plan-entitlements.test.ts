@@ -302,7 +302,7 @@ describe('Agency price and billing display', () => {
   })
 
   it('billing page renders plan price/limits from the canonical sources (SOURCE-CONTRACT)', () => {
-    expect(billingSource).toContain('{formatRegionalPrice(planKey, region)}')
+    expect(billingSource).toContain('{formatRegionalPrice(planKey, displayRegion)}')
     expect(billingSource).toMatch(/const limits\s+= PLAN_LIMITS\[currentPlan\]/)
     expect(billingSource).not.toMatch(/plan\.(price|priceId|clientLimit|qbrLimit|exportLimit|features)/)
     expect(billingSource).not.toMatch(/PLANS\[/)

@@ -129,7 +129,7 @@ describe('plan and usage stay visible to every role (SOURCE-CONTRACT)', () => {
     expect(usageCard).toContain('label="Clients"')
     expect(usageCard).toContain('label="QBRs generated this month"')
     // Prices and features render for every plan card regardless of role.
-    expect(planCards).toContain('{formatRegionalPrice(planKey, region)}')
+    expect(planCards).toContain('{formatRegionalPrice(planKey, displayRegion)}')
     expect(planCards).toContain('buildFeatureList(planKey)')
     expect(billingSource).toContain('Current plan: <span className="font-medium text-navy-800">{PLAN_NAMES[currentPlan]}</span>')
   })

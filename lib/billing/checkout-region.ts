@@ -11,12 +11,27 @@
 
 import { DEFAULT_REGION, currencyForRegion, type BillingRegion } from './regions'
 import type { BillingCurrency } from './currencies'
-import { getAvailableRegions, type PaidPlan } from './regional-prices'
+import { getAvailableRegions, getRegionalPriceTable, type PaidPlan } from './regional-prices'
 
 type PriceEnv = Record<string, string | undefined>
 
 export function selectableRegions(env: PriceEnv = process.env): BillingRegion[] {
   return getAvailableRegions(env)
+}
+
+// DISPLAY ONLY — which region's prices a paid workspace's plan cards show.
+// Derived from the workspace's stored Stripe Price (the same recognized-price
+// lookup the portal uses), never from a query parameter or the Preview flag.
+// Missing, unknown or misconfigured Price IDs fall back to the default region
+// (USD), the page's established behaviour — never a guessed regional currency.
+// Grants nothing: checkout, portal and entitlements resolve independently.
+export function displayRegionForStoredPrice(priceId: string | null | undefined, env: PriceEnv = process.env): BillingRegion {
+  if (!priceId) return DEFAULT_REGION
+  try {
+    return getRegionalPriceTable(env).find(p => p.recognized && p.stripePriceId === priceId)?.region ?? DEFAULT_REGION
+  } catch {
+    return DEFAULT_REGION
+  }
 }
 
 // Untrusted input (a query parameter). Anything not currently selectable —

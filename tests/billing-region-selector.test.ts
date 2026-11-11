@@ -10,7 +10,7 @@ import {
   formatRegionalPrice,
   PAID_PLANS,
 } from '@/lib/billing/regional-prices'
-import { selectableRegions, resolvePageRegion, checkoutRequestBody } from '@/lib/billing/checkout-region'
+import { selectableRegions, resolvePageRegion, checkoutRequestBody, displayRegionForStoredPrice } from '@/lib/billing/checkout-region'
 
 // Preview-only GMD certification path.
 //  - EXECUTABLE: the gate, the page-region resolver and the checkout body,
@@ -120,6 +120,67 @@ describe('billing page region resolution (EXECUTABLE)', () => {
   })
 })
 
+describe('billing card display currency (EXECUTABLE)', () => {
+  const cards = (region: Parameters<typeof formatRegionalPrice>[1]) =>
+    PAID_PLANS.map(p => compact(formatRegionalPrice(p, region)))
+  const USD_CARDS = ['$49', '$99', '$199']
+  const GMD_CARDS = ['D2,000', 'D4,000', 'D7,500']
+
+  // A/B: a free workspace displays whatever the selector resolved.
+  it('A. free Preview workspace + GLOBAL selected → USD cards', () => {
+    expect(cards(resolvePageRegion('GLOBAL', PREVIEW_GM))).toEqual(USD_CARDS)
+  })
+
+  it('B. free Preview workspace + GM selected → GMD cards', () => {
+    expect(cards(resolvePageRegion('GM', PREVIEW_GM))).toEqual(GMD_CARDS)
+  })
+
+  // C–H: a paid workspace displays the region of its stored Price. The helper
+  // takes no query parameter, so ?region= (E/F) cannot reach it.
+  it('C. paid USD workspace (Preview + GM flag) → USD cards', () => {
+    expect(cards(displayRegionForStoredPrice('price_usd_growth', PREVIEW_GM))).toEqual(USD_CARDS)
+  })
+
+  it('D. paid GMD workspace (Preview + GM flag) → GMD cards', () => {
+    expect(cards(displayRegionForStoredPrice('price_gmd_agency', PREVIEW_GM))).toEqual(GMD_CARDS)
+  })
+
+  it('E. paid GMD workspace with ?region=GLOBAL → still GMD cards', () => {
+    const pageRegion = resolvePageRegion('GLOBAL', PREVIEW_GM)
+    expect(pageRegion).toBe('GLOBAL')
+    expect(cards(displayRegionForStoredPrice('price_gmd_agency', PREVIEW_GM))).toEqual(GMD_CARDS)
+  })
+
+  it('F. paid USD workspace with ?region=GM → still USD cards', () => {
+    const pageRegion = resolvePageRegion('GM', PREVIEW_GM)
+    expect(pageRegion).toBe('GM')
+    expect(cards(displayRegionForStoredPrice('price_usd_growth', PREVIEW_GM))).toEqual(USD_CARDS)
+  })
+
+  it('G. Production paid USD workspace → USD cards (new and legacy USD env names)', () => {
+    expect(cards(displayRegionForStoredPrice('price_usd_solo', PRODUCTION))).toEqual(USD_CARDS)
+    expect(cards(displayRegionForStoredPrice('price_legacy_solo', { STRIPE_PRICE_SOLO: 'price_legacy_solo', VERCEL_ENV: 'production' })))
+      .toEqual(USD_CARDS)
+  })
+
+  it('paid display derives from the stored Price, not the Preview flag', () => {
+    expect(displayRegionForStoredPrice('price_gmd_solo', PREVIEW_NO_FLAG)).toBe('GM')
+    expect(displayRegionForStoredPrice('price_usd_solo', PREVIEW_GM)).toBe('GLOBAL')
+  })
+
+  it.each([
+    ['unknown Price ID',               'price_bogus',      PREVIEW_GM],
+    ['null Price ID',                  null,               PREVIEW_GM],
+    ['undefined Price ID',             undefined,          PREVIEW_GM],
+    ['empty Price ID',                 '',                 PREVIEW_GM],
+    ['GMD Price ID with GMD env unset', 'price_gmd_agency', { ...USD_ENV, VERCEL_ENV: 'preview', BILLING_PREVIEW_REGIONS: 'GM' }],
+    ['duplicate-price config error',   'price_gmd_growth', { ...PREVIEW_GM, STRIPE_PRICE_GROWTH_GMD: 'price_usd_growth' }],
+  ])('H. %s → default USD cards, never a guessed GMD display', (_label, priceId, env) => {
+    expect(displayRegionForStoredPrice(priceId, env)).toBe('GLOBAL')
+    expect(cards(displayRegionForStoredPrice(priceId, env))).toEqual(USD_CARDS)
+  })
+})
+
 describe('billing page and BillingButton use the server-resolved region (SOURCE-CONTRACT)', () => {
   const page   = readSourceLF('app/(app)/dashboard/billing/page.tsx')
   const button = readSourceLF('app/(app)/dashboard/billing/billing-button.tsx')
@@ -140,10 +201,19 @@ describe('billing page and BillingButton use the server-resolved region (SOURCE-
     expect(page).toMatch(/const region\s*=\s*showRegionSelector \? resolvePageRegion\(searchParams\?\.region\) : 'GLOBAL'/)
   })
 
-  it('prices and checkout availability follow the resolved region', () => {
-    expect(page).toMatch(/formatRegionalPrice\(planKey, region\)/)
+  it('prices follow the display region; checkout availability follows the resolved region', () => {
+    expect(page).toMatch(/formatRegionalPrice\(planKey, displayRegion\)/)
+    expect(page).not.toMatch(/formatRegionalPrice\(planKey, region\)/)
     expect(page).toMatch(/const checkoutAvailable = regions\.includes\(region\)/)
     expect(page).toMatch(/<BillingButton planKey=\{planKey\} isCurrent=\{isCurrent\} checkoutAvailable=\{checkoutAvailable\} region=\{region\} \/>/)
+  })
+
+  it('a paid workspace displays the region of its stored stripePriceId; a free one displays the resolved region', () => {
+    expect(page).toMatch(/const hasPaidSub\s*=\s*hasLivePaidSubscription\(guardSub\)/)
+    expect(page).toMatch(/select: \{ stripePriceId: true \}/)
+    expect(page).toMatch(/const displayRegion = hasPaidSub \? displayRegionForStoredPrice\(storedPrice\?\.stripePriceId\) : region/)
+    // The paid display path never reads ?region= or the Preview flag.
+    expect(page).not.toMatch(/displayRegionForStoredPrice\([^)]*searchParams/)
   })
 
   it('BillingButton sends checkoutRequestBody(planKey, region), never a hardcoded USD body', () => {

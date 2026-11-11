@@ -367,10 +367,43 @@ describe('stripePriceId is not read by entitlement, guard or billing-UI code (SO
   it.each([
     'lib/subscription-access.ts',
     'lib/limits.ts',
-    'app/(app)/dashboard/billing/page.tsx',
     'app/(app)/dashboard/billing/billing-button.tsx',
   ])('%s never references stripePriceId', file => {
     expect(readSourceLF(file)).not.toContain('stripePriceId')
+  })
+
+  // The billing page may read stripePriceId ONLY to pick the plan-card display
+  // currency, and only after hasLivePaidSubscription (which ignores the price)
+  // has established a live paid subscription. A canceled FREE row with a
+  // retained price never reaches the read. Paid status, entitlement, checkout,
+  // portal and billing-control visibility never depend on it.
+  it('app/(app)/dashboard/billing/page.tsx reads stripePriceId only for live-paid card display', () => {
+    const page = readSourceLF('app/(app)/dashboard/billing/page.tsx')
+
+    // Paid/live authority stays hasLivePaidSubscription on the guard query, which
+    // does not select stripePriceId.
+    expect(page).toMatch(/const hasPaidSub\s*=\s*hasLivePaidSubscription\(guardSub\)\n/)
+    expect(page).toContain('select: { plan: true, status: true, stripeStatus: true, stripeSubscriptionId: true }')
+
+    // The only stripePriceId references are this gated read and its display use.
+    const displayBlock =
+      '  const storedPrice   = hasPaidSub\n' +
+      '    ? await prisma.subscription.findUnique({ where: { workspaceId }, select: { stripePriceId: true } })\n' +
+      '    : null\n' +
+      '  const displayRegion = hasPaidSub ? displayRegionForStoredPrice(storedPrice?.stripePriceId) : region\n'
+    expect(page).toContain(displayBlock)
+    expect(page.indexOf('const hasPaidSub')).toBeLessThan(page.indexOf(displayBlock))
+    expect(page.split('stripePriceId').length - 1).toBe(2)
+    expect(page.replace(displayBlock, '')).not.toContain('stripePriceId')
+    expect(page.replace(displayBlock, '')).not.toContain('storedPrice')
+
+    // The derived region feeds the price text only — never checkout, the
+    // selector, BillingButton or the Manage control.
+    expect(page.replace(displayBlock, '').match(/\bdisplayRegion\b/g)).toEqual(['displayRegion'])
+    expect(page).toContain('{formatRegionalPrice(planKey, displayRegion)}')
+    expect(page).toMatch(/const checkoutAvailable = regions\.includes\(region\)\n/)
+    expect(page).toContain('<BillingButton planKey={planKey} isCurrent={isCurrent} checkoutAvailable={checkoutAvailable} region={region} />')
+    expect(page).toContain('{canManageBilling && sub?.stripeSubscriptionId && (')
   })
 
   it('duplicate-subscription guard depends on plan/status/stripeSubscriptionId only', () => {
