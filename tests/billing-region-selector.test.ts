@@ -32,6 +32,8 @@ const ALL_PRICES = { ...USD_ENV, ...GMD_ENV, ...XOF_ENV }
 const PRODUCTION       = { ...ALL_PRICES, VERCEL_ENV: 'production', BILLING_PREVIEW_REGIONS: 'GM' }
 const PREVIEW_NO_FLAG  = { ...ALL_PRICES, VERCEL_ENV: 'preview' }
 const PREVIEW_GM       = { ...ALL_PRICES, VERCEL_ENV: 'preview', BILLING_PREVIEW_REGIONS: 'GM' }
+const PREVIEW_XOF      = { ...ALL_PRICES, VERCEL_ENV: 'preview', BILLING_PREVIEW_REGIONS: 'XOF_ZONE' }
+const PREVIEW_BOTH     = { ...ALL_PRICES, VERCEL_ENV: 'preview', BILLING_PREVIEW_REGIONS: 'GM,XOF_ZONE' }
 
 const compact = (s: string) => s.replace(/\s/g, '')
 
@@ -40,9 +42,9 @@ function readSourceLF(relativePath: string): string {
 }
 
 describe('Preview checkout gate (EXECUTABLE)', () => {
-  it('Production config is unchanged and the Preview ceiling is GM only', () => {
+  it('Production config is unchanged and the Preview ceiling is GM and XOF_ZONE', () => {
     expect(CHECKOUT_APPROVED_REGIONS).toEqual({ GLOBAL: true, GM: false, XOF_ZONE: false })
-    expect(PREVIEW_CHECKOUT_REGIONS).toEqual(['GM'])
+    expect(PREVIEW_CHECKOUT_REGIONS).toEqual(['GM', 'XOF_ZONE'])
   })
 
   it.each([
@@ -57,10 +59,9 @@ describe('Preview checkout gate (EXECUTABLE)', () => {
     expect(getAvailableRegions(env)).toEqual(expected)
   })
 
-  it.each(['XOF_ZONE', 'GM,XOF_ZONE', 'XOF_ZONE,GM'])('D. flag %j never approves XOF_ZONE', (flag) => {
-    const env = { ...PREVIEW_GM, BILLING_PREVIEW_REGIONS: flag }
-    expect(isCheckoutApproved('XOF_ZONE', env)).toBe(false)
-    expect(getAvailableRegions(env)).not.toContain('XOF_ZONE')
+  it('D. GM-only flag never approves XOF_ZONE', () => {
+    expect(isCheckoutApproved('XOF_ZONE', PREVIEW_GM)).toBe(false)
+    expect(getAvailableRegions(PREVIEW_GM)).not.toContain('XOF_ZONE')
   })
 
   it.each(['gm', 'GMD', 'GAMBIA', '*', 'ALL', 'GLOBAL', 'GM;XOF_ZONE', 'G M'])('E. unknown flag value %j enables nothing', (flag) => {
@@ -82,6 +83,50 @@ describe('Preview checkout gate (EXECUTABLE)', () => {
 
   it('G. Preview + flag with a GMD price duplicating a USD price → no regions (fail closed)', () => {
     expect(getAvailableRegions({ ...PREVIEW_GM, STRIPE_PRICE_GROWTH_GMD: 'price_usd_growth' })).toEqual([])
+  })
+})
+
+describe('Preview-only XOF certification gate (EXECUTABLE)', () => {
+  it.each([
+    ['A. production + both flags',        { ...PRODUCTION, BILLING_PREVIEW_REGIONS: 'GM,XOF_ZONE' }, ['GLOBAL']],
+    ['A. production + XOF flag',          { ...PRODUCTION, BILLING_PREVIEW_REGIONS: 'XOF_ZONE' },    ['GLOBAL']],
+    ['B. preview without flag',           PREVIEW_NO_FLAG,                                           ['GLOBAL']],
+    ['B. preview + GM only',              PREVIEW_GM,                                                ['GLOBAL', 'GM']],
+    ['C. preview + XOF_ZONE',             PREVIEW_XOF,                                               ['GLOBAL', 'XOF_ZONE']],
+    ['D. preview + GM,XOF_ZONE',          PREVIEW_BOTH,                                              ['GLOBAL', 'GM', 'XOF_ZONE']],
+    ['D. preview + XOF_ZONE,GM',          { ...PREVIEW_BOTH, BILLING_PREVIEW_REGIONS: 'XOF_ZONE,GM' }, ['GLOBAL', 'GM', 'XOF_ZONE']],
+    ['D. preview + whitespace',           { ...PREVIEW_BOTH, BILLING_PREVIEW_REGIONS: ' GM , XOF_ZONE ' }, ['GLOBAL', 'GM', 'XOF_ZONE']],
+    ['no VERCEL_ENV + both flags',        { ...ALL_PRICES, BILLING_PREVIEW_REGIONS: 'GM,XOF_ZONE' }, ['GLOBAL']],
+    ['development + both flags',          { ...PREVIEW_BOTH, VERCEL_ENV: 'development' },            ['GLOBAL']],
+    ['"Preview" (case) + both flags',     { ...PREVIEW_BOTH, VERCEL_ENV: 'Preview' },                ['GLOBAL']],
+  ])('%s → available regions %j', (_label, env, expected) => {
+    expect(getAvailableRegions(env)).toEqual(expected)
+  })
+
+  it.each(['XOF', 'xof', 'xof_zone', 'Xof_Zone', 'XOF ZONE', 'XOF-ZONE', 'XOFZONE', 'CFA', '*', 'ALL', 'XOF_ZONE;GM', 'gm,xof_zone'])(
+    'E. inexact flag value %j enables nothing',
+    (flag) => {
+      expect(previewCheckoutRegions({ VERCEL_ENV: 'preview', BILLING_PREVIEW_REGIONS: flag })).toEqual([])
+      expect(getAvailableRegions({ ...PREVIEW_BOTH, BILLING_PREVIEW_REGIONS: flag })).toEqual(['GLOBAL'])
+    },
+  )
+
+  it('E. only the exact codes survive a mixed flag', () => {
+    expect(previewCheckoutRegions({ VERCEL_ENV: 'preview', BILLING_PREVIEW_REGIONS: 'xof,XOF_ZONE,ALL,GM,*' })).toEqual(['GM', 'XOF_ZONE'])
+  })
+
+  it.each(Object.keys(XOF_ENV))('F. missing %s → XOF unavailable, GM unaffected', (key) => {
+    const env: Record<string, string> = { ...PREVIEW_BOTH }
+    delete env[key]
+    expect(getAvailableRegions(env)).toEqual(['GLOBAL', 'GM'])
+  })
+
+  it.each([
+    ['G. XOF duplicating USD',         { STRIPE_PRICE_GROWTH_XOF: 'price_usd_growth' }],
+    ['H. XOF duplicating GMD',         { STRIPE_PRICE_AGENCY_XOF: 'price_gmd_agency' }],
+    ['I. two XOF plans sharing a price', { STRIPE_PRICE_AGENCY_XOF: 'price_xof_solo' }],
+  ])('%s → no regions at all (fail closed)', (_label, override) => {
+    expect(getAvailableRegions({ ...PREVIEW_BOTH, ...override })).toEqual([])
   })
 })
 
@@ -117,6 +162,42 @@ describe('billing page region resolution (EXECUTABLE)', () => {
   it('R. GM displays D2,000 / D4,000 / D7,500; GLOBAL displays $49 / $99 / $199', () => {
     expect(PAID_PLANS.map(p => compact(formatRegionalPrice(p, 'GM')))).toEqual(['D2,000', 'D4,000', 'D7,500'])
     expect(PAID_PLANS.map(p => compact(formatRegionalPrice(p, 'GLOBAL')))).toEqual(['$49', '$99', '$199'])
+  })
+
+  // XOF selector combinations for a FREE Preview workspace.
+  it.each([
+    ['GM only',          PREVIEW_GM,   ['GLOBAL', 'GM']],
+    ['XOF_ZONE only',    PREVIEW_XOF,  ['GLOBAL', 'XOF_ZONE']],
+    ['GM,XOF_ZONE',      PREVIEW_BOTH, ['GLOBAL', 'GM', 'XOF_ZONE']],
+  ])('XOF selector: %s → selectable %j', (_label, env, expected) => {
+    expect(selectableRegions(env)).toEqual(expected)
+  })
+
+  it('XOF_ZONE only: ?region=XOF_ZONE selects XOF; ?region=GM falls back to GLOBAL', () => {
+    expect(resolvePageRegion('XOF_ZONE', PREVIEW_XOF)).toBe('XOF_ZONE')
+    expect(resolvePageRegion('GM', PREVIEW_XOF)).toBe('GLOBAL')
+  })
+
+  it('GM,XOF_ZONE: each region resolves to itself', () => {
+    expect(resolvePageRegion('GM', PREVIEW_BOTH)).toBe('GM')
+    expect(resolvePageRegion('XOF_ZONE', PREVIEW_BOTH)).toBe('XOF_ZONE')
+    expect(resolvePageRegion('GLOBAL', PREVIEW_BOTH)).toBe('GLOBAL')
+  })
+
+  it.each(['xof_zone', 'XOF', 'Xof_Zone', ['XOF_ZONE']])('untrusted ?region=%j under GM,XOF_ZONE resolves to GLOBAL', (requested) => {
+    expect(resolvePageRegion(requested, PREVIEW_BOTH)).toBe('GLOBAL')
+  })
+
+  it('Production: ?region=XOF_ZONE falls back to GLOBAL', () => {
+    expect(resolvePageRegion('XOF_ZONE', { ...PRODUCTION, BILLING_PREVIEW_REGIONS: 'GM,XOF_ZONE' })).toBe('GLOBAL')
+  })
+
+  it.each(PAID_PLANS)('S. selecting XOF_ZONE sends { plan: %s, region: XOF_ZONE, currency: XOF }', (plan) => {
+    expect(checkoutRequestBody(plan, 'XOF_ZONE')).toEqual({ plan, region: 'XOF_ZONE', currency: 'XOF' })
+  })
+
+  it('XOF_ZONE displays the existing Intl CFA format for 15,000 / 30,000 / 55,000', () => {
+    expect(PAID_PLANS.map(p => compact(formatRegionalPrice(p, 'XOF_ZONE')))).toEqual(['15000FCFA', '30000FCFA', '55000FCFA'])
   })
 })
 
@@ -178,6 +259,44 @@ describe('billing card display currency (EXECUTABLE)', () => {
   ])('H. %s → default USD cards, never a guessed GMD display', (_label, priceId, env) => {
     expect(displayRegionForStoredPrice(priceId, env)).toBe('GLOBAL')
     expect(cards(displayRegionForStoredPrice(priceId, env))).toEqual(USD_CARDS)
+  })
+
+  // T. Paid USD/GMD/XOF workspaces each display their own card currency.
+  const XOF_CARDS = ['15000FCFA', '30000FCFA', '55000FCFA']
+
+  it('T. free Preview workspace + XOF_ZONE selected → XOF cards', () => {
+    expect(cards(resolvePageRegion('XOF_ZONE', PREVIEW_BOTH))).toEqual(XOF_CARDS)
+  })
+
+  it.each([
+    ['paid USD',  'price_usd_growth', USD_CARDS],
+    ['paid GMD',  'price_gmd_agency', GMD_CARDS],
+    ['paid XOF',  'price_xof_solo',   XOF_CARDS],
+  ])('T. %s workspace (Preview + GM,XOF_ZONE) → own currency cards', (_label, priceId, expected) => {
+    expect(cards(displayRegionForStoredPrice(priceId, PREVIEW_BOTH))).toEqual(expected)
+  })
+
+  it.each(['GLOBAL', 'GM'])('T. paid XOF workspace with ?region=%s → still XOF cards', (requested) => {
+    expect(resolvePageRegion(requested, PREVIEW_BOTH)).toBe(requested)
+    expect(cards(displayRegionForStoredPrice('price_xof_growth', PREVIEW_BOTH))).toEqual(XOF_CARDS)
+  })
+
+  it('T. paid USD/GMD workspaces with ?region=XOF_ZONE → still their own cards', () => {
+    expect(resolvePageRegion('XOF_ZONE', PREVIEW_BOTH)).toBe('XOF_ZONE')
+    expect(cards(displayRegionForStoredPrice('price_usd_growth', PREVIEW_BOTH))).toEqual(USD_CARDS)
+    expect(cards(displayRegionForStoredPrice('price_gmd_agency', PREVIEW_BOTH))).toEqual(GMD_CARDS)
+  })
+
+  it('T. paid XOF display derives from the stored Price, not the Preview flag', () => {
+    expect(displayRegionForStoredPrice('price_xof_agency', PREVIEW_NO_FLAG)).toBe('XOF_ZONE')
+    expect(displayRegionForStoredPrice('price_xof_agency', PREVIEW_GM)).toBe('XOF_ZONE')
+  })
+
+  it.each([
+    ['XOF Price ID with XOF env unset', 'price_xof_agency', { ...USD_ENV, ...GMD_ENV, VERCEL_ENV: 'preview', BILLING_PREVIEW_REGIONS: 'GM,XOF_ZONE' }],
+    ['XOF/USD duplicate config error',  'price_xof_growth', { ...PREVIEW_BOTH, STRIPE_PRICE_SOLO_XOF: 'price_usd_solo' }],
+  ])('T. %s → default USD cards, never a guessed XOF display', (_label, priceId, env) => {
+    expect(displayRegionForStoredPrice(priceId, env)).toBe('GLOBAL')
   })
 })
 

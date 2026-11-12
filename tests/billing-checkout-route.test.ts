@@ -126,6 +126,40 @@ function previewWithGm(flag: string | null = 'GM') {
   mocks.pricesRetrieve.mockImplementation(async (id: string) => stripeGmdPrice(id))
 }
 
+// ── Preview-only XOF certification fixtures ──────────────────────────────────
+
+const XOF_ENV = {
+  STRIPE_PRICE_SOLO_XOF:   'price_xof_solo',
+  STRIPE_PRICE_GROWTH_XOF: 'price_xof_growth',
+  STRIPE_PRICE_AGENCY_XOF: 'price_xof_agency',
+}
+// XOF is zero-decimal: unit_amount is the whole-franc amount.
+const XOF_AMOUNTS: Record<string, number> = {
+  price_xof_solo: 15_000, price_xof_growth: 30_000, price_xof_agency: 55_000,
+}
+
+function stripeXofPrice(id: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id, active: true, currency: 'xof', unit_amount: XOF_AMOUNTS[id], type: 'recurring',
+    recurring: { interval: 'month', interval_count: 1 },
+    ...overrides,
+  }
+}
+
+// Each configured regional Price ID resolves to its own correct Stripe Price.
+function stripeRegionalPrice(id: string) {
+  return id in XOF_AMOUNTS ? stripeXofPrice(id) : stripeGmdPrice(id)
+}
+
+// `null` = BILLING_PREVIEW_REGIONS unset. GMD prices are configured too, so
+// every XOF test also exercises the full multi-currency table.
+function previewWithXof(flag: string | null = 'XOF_ZONE') {
+  vi.stubEnv('VERCEL_ENV', 'preview')
+  vi.stubEnv('BILLING_PREVIEW_REGIONS', flag ?? undefined)
+  Object.assign(process.env, GMD_ENV, XOF_ENV)
+  mocks.pricesRetrieve.mockImplementation(async (id: string) => stripeRegionalPrice(id))
+}
+
 describe('canonical { plan, region, currency } — USD', () => {
   it.each([
     ['SOLO',   'price_live_solo'],
@@ -430,11 +464,9 @@ describe('Preview-only GMD checkout (VERCEL_ENV=preview AND BILLING_PREVIEW_REGI
     expect(session.metadata).toMatchObject({ plan: 'GROWTH', region: 'GM', currency: 'GMD' })
   })
 
-  it.each(['XOF_ZONE', 'GM,XOF_ZONE', 'XOF'])('D. flag %j never enables XOF', async (flag) => {
+  it.each(['GM', 'XOF'])('D. flag %j does not enable XOF', async (flag) => {
     previewWithGm(flag)
-    Object.assign(process.env, {
-      STRIPE_PRICE_SOLO_XOF: 'price_xof_solo', STRIPE_PRICE_GROWTH_XOF: 'price_xof_growth', STRIPE_PRICE_AGENCY_XOF: 'price_xof_agency',
-    })
+    Object.assign(process.env, XOF_ENV)
     expect((await call({ plan: 'SOLO', region: 'XOF_ZONE', currency: 'XOF' })).status).toBe(400)
     expectNoStripeAtAll()
   })
@@ -538,5 +570,191 @@ describe('Preview-only GMD checkout (VERCEL_ENV=preview AND BILLING_PREVIEW_REGI
     expect((await call({ plan: 'SOLO', region: 'GLOBAL', currency: 'USD' })).status).toBe(200)
     expect(mocks.pricesRetrieve).not.toHaveBeenCalled()
     expect(mocks.sessionsCreate.mock.calls[0][0].line_items[0].price).toBe('price_live_solo')
+  })
+})
+
+describe('Preview-only XOF checkout (VERCEL_ENV=preview AND BILLING_PREVIEW_REGIONS lists XOF_ZONE)', () => {
+  const XOF_SOLO   = { plan: 'SOLO',   region: 'XOF_ZONE', currency: 'XOF' }
+  const XOF_GROWTH = { plan: 'GROWTH', region: 'XOF_ZONE', currency: 'XOF' }
+  const XOF_PLANS  = ['SOLO', 'GROWTH', 'AGENCY'].map(plan => ({ plan, region: 'XOF_ZONE', currency: 'XOF' }))
+
+  function expectNoStripeAtAll() {
+    expectNoStripe()
+    expect(mocks.pricesRetrieve).not.toHaveBeenCalled()
+  }
+
+  it.each(['XOF_ZONE', 'GM,XOF_ZONE'])('A. Production rejects XOF with flag %j and all XOF prices set', async (flag) => {
+    previewWithXof(flag)
+    vi.stubEnv('VERCEL_ENV', 'production')
+    for (const body of XOF_PLANS) expect((await call(body)).status).toBe(400)
+    expectNoStripeAtAll()
+  })
+
+  it.each([null, '', 'GM'])('B. Preview with flag %j (no XOF_ZONE) rejects XOF', async (flag) => {
+    previewWithXof(flag)
+    for (const body of XOF_PLANS) expect((await call(body)).status).toBe(400)
+    expectNoStripeAtAll()
+  })
+
+  it.each([undefined, 'development', 'staging', 'Preview'])('B. VERCEL_ENV=%j with XOF_ZONE still rejects XOF', async (vercelEnv) => {
+    previewWithXof()
+    vi.stubEnv('VERCEL_ENV', vercelEnv)
+    expect((await call(XOF_SOLO)).status).toBe(400)
+    expectNoStripeAtAll()
+  })
+
+  it.each([
+    ['SOLO',   'price_xof_solo'],
+    ['GROWTH', 'price_xof_growth'],
+    ['AGENCY', 'price_xof_agency'],
+  ])('C/S. Preview + XOF_ZONE + complete config accepts %s/XOF with XOF-only metadata', async (plan, priceId) => {
+    previewWithXof()
+    const { status, data } = await call({ plan, region: 'XOF_ZONE', currency: 'XOF' }, browserHeaders(PREVIEW_ORIGIN))
+    expect(status).toBe(200)
+    expect(data.url).toBe('https://checkout.example/session')
+    expect(mocks.pricesRetrieve).toHaveBeenCalledTimes(1)
+    expect(mocks.pricesRetrieve).toHaveBeenCalledWith(priceId)
+    const session = mocks.sessionsCreate.mock.calls[0][0]
+    expect(session.line_items).toEqual([{ price: priceId, quantity: 1 }])
+    expect(session.metadata).toEqual({ workspaceId: 'ws_active', plan, region: 'XOF_ZONE', currency: 'XOF' })
+  })
+
+  it.each(['GM,XOF_ZONE', 'XOF_ZONE,GM'])('D. Preview + %j enables GMD and XOF, each with its own price; USD unchanged', async (flag) => {
+    previewWithXof(flag)
+
+    expect((await call({ plan: 'AGENCY', region: 'GM', currency: 'GMD' })).status).toBe(200)
+    expect((await call({ plan: 'AGENCY', region: 'XOF_ZONE', currency: 'XOF' })).status).toBe(200)
+    expect((await call({ plan: 'AGENCY', region: 'GLOBAL', currency: 'USD' })).status).toBe(200)
+
+    const sessions = mocks.sessionsCreate.mock.calls.map(c => c[0])
+    expect(sessions.map(s => s.line_items[0].price)).toEqual(['price_gmd_agency', 'price_xof_agency', 'price_live_agency'])
+    expect(sessions.map(s => s.metadata.currency)).toEqual(['GMD', 'XOF', 'USD'])
+    // Only the two regional prices are certified against Stripe; USD is not.
+    expect(mocks.pricesRetrieve.mock.calls.map(c => c[0])).toEqual(['price_gmd_agency', 'price_xof_agency'])
+  })
+
+  it.each(['XOF', 'xof', 'xof_zone', 'Xof_Zone', 'XOF ZONE', 'XOF-ZONE', 'CFA', '*', 'ALL', 'GLOBAL', 'XOF_ZONE;GM'])(
+    'E. unknown or inexact flag value %j does not enable XOF',
+    async (flag) => {
+      previewWithXof(flag)
+      expect((await call(XOF_SOLO)).status).toBe(400)
+      expectNoStripeAtAll()
+    },
+  )
+
+  it('E. flag parsing tolerates whitespace around exact codes', async () => {
+    previewWithXof(' GM , XOF_ZONE ')
+    expect((await call(XOF_SOLO)).status).toBe(200)
+  })
+
+  it.each(Object.keys(XOF_ENV))('F. missing %s rejects every XOF plan, not just that one; GM still works', async (missing) => {
+    previewWithXof('GM,XOF_ZONE')
+    delete process.env[missing]
+    for (const body of XOF_PLANS) expect((await call(body)).status).toBe(400)
+    expectNoStripeAtAll()
+    expect((await call({ plan: 'SOLO', region: 'GM', currency: 'GMD' })).status).toBe(200)
+  })
+
+  it('G. an XOF price duplicating a USD price fails closed (500) for XOF, GM and USD alike', async () => {
+    previewWithXof('GM,XOF_ZONE')
+    process.env.STRIPE_PRICE_GROWTH_XOF = 'price_live_growth'
+    expect((await call(XOF_GROWTH)).status).toBe(500)
+    expect((await call({ plan: 'GROWTH', region: 'GM', currency: 'GMD' })).status).toBe(500)
+    expect((await call({ plan: 'GROWTH', region: 'GLOBAL', currency: 'USD' })).status).toBe(500)
+    expectNoStripeAtAll()
+  })
+
+  it('H. an XOF price duplicating a GMD price fails closed (500) for XOF and GM alike', async () => {
+    previewWithXof('GM,XOF_ZONE')
+    process.env.STRIPE_PRICE_AGENCY_XOF = 'price_gmd_agency'
+    expect((await call({ plan: 'AGENCY', region: 'XOF_ZONE', currency: 'XOF' })).status).toBe(500)
+    expect((await call({ plan: 'AGENCY', region: 'GM', currency: 'GMD' })).status).toBe(500)
+    expectNoStripeAtAll()
+  })
+
+  it('I. two XOF plans sharing one price fails closed (500)', async () => {
+    previewWithXof()
+    process.env.STRIPE_PRICE_AGENCY_XOF = 'price_xof_solo'
+    expect((await call(XOF_SOLO)).status).toBe(500)
+    expectNoStripeAtAll()
+  })
+
+  it.each([
+    ['J. USD currency',              { currency: 'usd' }],
+    ['J. GMD currency',              { currency: 'gmd' }],
+    ['J. uppercase XOF currency',    { currency: 'XOF' }],
+    ['K. ×100 amount (3,000,000)',   { unit_amount: 3_000_000 }],
+    ['L. wrong amount (30,001)',     { unit_amount: 30_001 }],
+    ['L. Solo amount on Growth',     { unit_amount: 15_000 }],
+    ['L. null amount',               { unit_amount: null }],
+    ['M. inactive',                  { active: false }],
+    ['N. yearly interval',           { recurring: { interval: 'year', interval_count: 1 } }],
+    ['N. weekly interval',           { recurring: { interval: 'week', interval_count: 1 } }],
+    ['N. every 3 months',            { recurring: { interval: 'month', interval_count: 3 } }],
+    ['O. one-time price',            { type: 'one_time', recurring: null }],
+  ])('%s on the XOF Stripe Price → 500, no customer or session', async (_label, overrides) => {
+    previewWithXof()
+    mocks.pricesRetrieve.mockImplementation(async (id: string) => stripeXofPrice(id, overrides))
+    const { status, data } = await call(XOF_GROWTH)
+    expect(status).toBe(500)
+    expect(data.error).toBe('Billing is temporarily unavailable')
+    expect(mocks.pricesRetrieve).toHaveBeenCalledWith('price_xof_growth')
+    expectNoStripe()
+  })
+
+  it('P. a Stripe error retrieving the XOF price fails closed', async () => {
+    previewWithXof()
+    mocks.pricesRetrieve.mockRejectedValue(Object.assign(new Error('No such price'), { code: 'resource_missing' }))
+    const { status, data } = await call(XOF_SOLO)
+    expect(status).toBe(500)
+    expect(data.error).toBe('Billing is temporarily unavailable')
+    expectNoStripe()
+  })
+
+  it.each([
+    ['paid USD Growth', { plan: 'GROWTH', status: 'active',   stripeStatus: 'active',   stripeSubscriptionId: 'sub_usd' }],
+    ['paid GMD Agency', { plan: 'AGENCY', status: 'active',   stripeStatus: 'active',   stripeSubscriptionId: 'sub_gmd' }],
+    ['paid XOF Solo',   { plan: 'SOLO',   status: 'active',   stripeStatus: 'active',   stripeSubscriptionId: 'sub_xof' }],
+    ['past_due XOF',    { plan: 'SOLO',   status: 'past_due', stripeStatus: 'past_due', stripeSubscriptionId: 'sub_xof' }],
+  ])('Q. %s workspace → 409 SUBSCRIPTION_EXISTS for XOF, no Stripe call of any kind', async (_label, sub) => {
+    previewWithXof('GM,XOF_ZONE')
+    mocks.subscriptionFindUnique.mockResolvedValue(sub)
+    const { status, data } = await call(XOF_SOLO)
+    expect(status).toBe(409)
+    expect(data.code).toBe('SUBSCRIPTION_EXISTS')
+    expectNoStripeAtAll()
+  })
+
+  it('R. Free workspace → exactly one XOF Checkout Session', async () => {
+    previewWithXof('GM,XOF_ZONE')
+    mocks.subscriptionFindUnique.mockResolvedValue(FREE_SUB)
+    expect((await call(XOF_SOLO)).status).toBe(200)
+    expect(mocks.createOrRetrieveCustomer).toHaveBeenCalledTimes(1)
+    expect(mocks.createOrRetrieveCustomer).toHaveBeenCalledWith({ workspaceId: 'ws_active', email: 'owner@example.com', name: 'Owner' })
+    expect(mocks.sessionsCreate).toHaveBeenCalledTimes(1)
+    expect(mocks.sessionsCreate.mock.calls[0][0].line_items).toEqual([{ price: 'price_xof_solo', quantity: 1 }])
+  })
+
+  it('currency mismatches stay rejected with XOF enabled', async () => {
+    previewWithXof('GM,XOF_ZONE')
+    expect((await call({ plan: 'SOLO', region: 'XOF_ZONE', currency: 'USD' })).status).toBe(400)
+    expect((await call({ plan: 'SOLO', region: 'XOF_ZONE', currency: 'GMD' })).status).toBe(400)
+    expect((await call({ plan: 'SOLO', region: 'GM',       currency: 'XOF' })).status).toBe(400)
+    expect((await call({ plan: 'SOLO', region: 'GLOBAL',   currency: 'XOF' })).status).toBe(400)
+    expectNoStripeAtAll()
+  })
+
+  it('the legacy { priceId } path never accepts an XOF price, even with XOF enabled', async () => {
+    previewWithXof()
+    expect((await call({ priceId: 'price_xof_solo' })).status).toBe(400)
+    expectNoStripeAtAll()
+  })
+
+  it('client-supplied amount or price fields are rejected for XOF', async () => {
+    previewWithXof()
+    expect((await call({ ...XOF_SOLO, amount: 1 })).status).toBe(400)
+    expect((await call({ ...XOF_SOLO, unit_amount: 1 })).status).toBe(400)
+    expect((await call({ ...XOF_SOLO, priceId: 'price_xof_solo' })).status).toBe(400)
+    expectNoStripeAtAll()
   })
 })

@@ -48,8 +48,8 @@ export default async function BillingPage({
   const seatsUsed = memberCount + pendingInviteCount
 
   // Region comes from server config only: selectableRegions() is ['GLOBAL'] in
-  // Production and in any Preview without BILLING_PREVIEW_REGIONS=GM, so the
-  // ?region= parameter can never select anything else there. The checkout
+  // Production and in any Preview without an enabled BILLING_PREVIEW_REGIONS
+  // region (GM, XOF_ZONE), so ?region= can never select anything else there. The checkout
   // route re-validates the region regardless. Amounts come from the canonical
   // pricing config.
   const regions = selectableRegions()

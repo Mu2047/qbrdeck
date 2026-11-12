@@ -123,6 +123,28 @@ describe('currency-specific portal configuration', () => {
     })
   })
 
+  it.each(['XOF_ZONE', 'GM,XOF_ZONE'])('U. Preview + %j: every XOF price opens STRIPE_PORTAL_CONFIG_XOF only', async (flag) => {
+    vi.stubEnv('VERCEL_ENV', 'preview')
+    vi.stubEnv('BILLING_PREVIEW_REGIONS', flag)
+    for (const priceId of ['price_xof_solo', 'price_xof_growth', 'price_xof_agency']) {
+      mocks.portalSessionsCreate.mockClear()
+      mocks.subscriptionFindUnique.mockResolvedValue(row(priceId, 'cus_xof'))
+      expect((await call()).status).toBe(200)
+      expect(sessionArgs()).toMatchObject({ customer: 'cus_xof', configuration: 'bpc_xof' })
+    }
+  })
+
+  it('U. client-supplied USD/GMD configuration cannot redirect an XOF subscriber', async () => {
+    mocks.subscriptionFindUnique.mockResolvedValue(row('price_xof_agency', 'cus_xof'))
+    const req = request(
+      { currency: 'GMD', configuration: 'bpc_gmd' },
+      `${APP_URL}/api/billing/portal?currency=USD&configuration=bpc_usd`,
+    )
+    expect((await call(req)).status).toBe(200)
+    expect(req.json).not.toHaveBeenCalled()
+    expect(sessionArgs()).toMatchObject({ customer: 'cus_xof', configuration: 'bpc_xof' })
+  })
+
   it('USD subscriptions on legacy STRIPE_PRICE_{PLAN} names still resolve', async () => {
     delete process.env.STRIPE_PRICE_SOLO_USD
     process.env.STRIPE_PRICE_SOLO = 'price_legacy_solo'
@@ -220,6 +242,16 @@ describe('fails closed — no portal session', () => {
 
   it('USD portal config missing → 503 (no silent Stripe default)', async () => {
     delete process.env.STRIPE_PORTAL_CONFIG_USD
+    expect((await call()).status).toBe(503)
+    expect(mocks.portalSessionsCreate).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['GMD', 'bpc_gmd'],
+    ['USD', 'bpc_usd'],
+  ])('W. XOF configured with the %s config ID → 503 for XOF, no portal session', async (_other, sharedId) => {
+    process.env.STRIPE_PORTAL_CONFIG_XOF = sharedId
+    mocks.subscriptionFindUnique.mockResolvedValue(row('price_xof_growth'))
     expect((await call()).status).toBe(503)
     expect(mocks.portalSessionsCreate).not.toHaveBeenCalled()
   })

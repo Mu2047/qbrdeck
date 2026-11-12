@@ -30,6 +30,10 @@ const mocks = vi.hoisted(() => ({
   subscriptionsList:     vi.fn(),
   customersRetrieve:     vi.fn(),
   portalSessionsCreate:  vi.fn(),
+  // Checkout route (lifecycle X only).
+  pricesRetrieve:           vi.fn(),
+  checkoutSessionsCreate:   vi.fn(),
+  createOrRetrieveCustomer: vi.fn(),
 }))
 
 vi.mock('@clerk/nextjs/server', () => ({ auth: mocks.auth }))
@@ -40,7 +44,10 @@ vi.mock('@/lib/stripe', () => ({
     subscriptions: { retrieve: mocks.subscriptionsRetrieve, list: mocks.subscriptionsList },
     customers:     { retrieve: mocks.customersRetrieve },
     billingPortal: { sessions: { create: mocks.portalSessionsCreate } },
+    prices:        { retrieve: mocks.pricesRetrieve },
+    checkout:      { sessions: { create: mocks.checkoutSessionsCreate } },
   },
+  createOrRetrieveCustomer: mocks.createOrRetrieveCustomer,
 }))
 vi.mock('@/lib/prisma', () => {
   const find = ({ where }: any) => {
@@ -49,6 +56,9 @@ vi.mock('@/lib/prisma', () => {
   }
   return {
     prisma: {
+      user: {
+        findUnique: vi.fn(async () => ({ id: 'u_owner', email: 'owner@example.com', name: 'Owner' })),
+      },
       stripeEvent: {
         findUnique: vi.fn(async () => null),
         upsert:     vi.fn(async () => ({})),
@@ -87,6 +97,7 @@ vi.mock('@/lib/prisma', () => {
 
 import { POST as webhook } from '@/app/api/webhooks/stripe/route'
 import { POST as portal } from '@/app/api/billing/portal/route'
+import { POST as checkout } from '@/app/api/billing/checkout/route'
 import { getEffectivePlan, hasPaidAccess, type SubscriptionAccess } from '@/lib/subscription-access'
 import { hasLivePaidSubscription } from '@/lib/billing/checkout-request'
 
@@ -323,6 +334,93 @@ describe('U. Preview GMD lifecycle: checkout → webhook → portal stays GMD-is
       // A later GMD webhook for the GMD customer never reaches the USD workspace.
       await deliver('customer.subscription.updated', gmdSub, 'evt_gmd_updated')
       expect(mocks.rows.get(WS_USD)).toEqual(usdRow)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+})
+
+describe('X. Preview XOF lifecycle: checkout → webhook → portal leaves USD and GMD untouched', () => {
+  it('an XOF checkout lands on its own workspace/customer, opens the XOF portal, and never changes the USD Growth or GMD Agency rows', async () => {
+    vi.stubEnv('VERCEL_ENV', 'preview')
+    vi.stubEnv('BILLING_PREVIEW_REGIONS', 'GM,XOF_ZONE')
+    try {
+      const WS_USD = 'ws_usd_growth'
+      const WS_GMD = 'ws_gmd_agency'
+      const usdRow = {
+        ...paidRow('GROWTH', 'price_usd_growth'),
+        workspaceId: WS_USD, stripeCustomerId: 'cus_usd', stripeSubscriptionId: 'sub_usd', cancelAtPeriodEnd: false,
+      }
+      const gmdRow = {
+        ...paidRow('AGENCY', 'price_gmd_agency'),
+        workspaceId: WS_GMD, stripeCustomerId: 'cus_gmd', stripeSubscriptionId: 'sub_gmd', cancelAtPeriodEnd: false,
+      }
+      mocks.rows.set(WS_USD, { ...usdRow })
+      mocks.rows.set(WS_GMD, { ...gmdRow })
+      // The separate XOF test workspace: a FREE placeholder, no Stripe customer yet.
+      mocks.rows.set(WS, {
+        ...paidRow('FREE', ''), stripeCustomerId: `free_${WS}`, stripeSubscriptionId: null, stripePriceId: null,
+        status: 'active', stripeStatus: null, cancelAtPeriodEnd: false,
+      })
+      const untouched = () => {
+        expect(mocks.rows.get(WS_USD)).toEqual(usdRow)
+        expect(mocks.rows.get(WS_GMD)).toEqual(gmdRow)
+      }
+
+      // 1. Checkout: certified XOF price, a new XOF-only customer, one session.
+      mocks.pricesRetrieve.mockResolvedValue({
+        id: 'price_xof_growth', active: true, currency: 'xof', unit_amount: 30_000, type: 'recurring',
+        recurring: { interval: 'month', interval_count: 1 },
+      })
+      // Like the real helper: a new customer is stored on the calling workspace only.
+      mocks.createOrRetrieveCustomer.mockImplementation(async ({ workspaceId }: { workspaceId: string }) => {
+        mocks.rows.set(workspaceId, { ...mocks.rows.get(workspaceId), stripeCustomerId: 'cus_xof' })
+        return 'cus_xof'
+      })
+      mocks.checkoutSessionsCreate.mockResolvedValue({ url: 'https://checkout.example/xof' })
+      const url = `${APP_URL}/api/billing/checkout`
+      const res = await checkout({
+        json: async () => ({ plan: 'GROWTH', region: 'XOF_ZONE', currency: 'XOF' }),
+        url, nextUrl: new URL(url), headers: new Headers({ origin: APP_URL, host: new URL(APP_URL).host }),
+      } as any)
+      expect(res.status).toBe(200)
+      expect(mocks.createOrRetrieveCustomer).toHaveBeenCalledTimes(1)
+      expect(mocks.createOrRetrieveCustomer.mock.calls[0][0].workspaceId).toBe(WS)
+      expect(mocks.checkoutSessionsCreate).toHaveBeenCalledTimes(1)
+      const session = mocks.checkoutSessionsCreate.mock.calls[0][0]
+      expect(session).toMatchObject({
+        customer:   'cus_xof',
+        line_items: [{ price: 'price_xof_growth', quantity: 1 }],
+        metadata:   { workspaceId: WS, plan: 'GROWTH', region: 'XOF_ZONE', currency: 'XOF' },
+      })
+      untouched()
+
+      // 2. Webhook: the XOF subscription is written to the XOF workspace only.
+      const xofSub = { ...stripeSubscription('price_xof_growth', 'active'), id: 'sub_xof', customer: 'cus_xof', created: 3000 }
+      mocks.subscriptionsRetrieve.mockResolvedValue(xofSub)
+      await deliver('checkout.session.completed', { customer: 'cus_xof', subscription: 'sub_xof', metadata: session.metadata }, 'evt_xof_checkout')
+      expect(row()).toMatchObject({ plan: 'GROWTH', stripeSubscriptionId: 'sub_xof', stripePriceId: 'price_xof_growth', stripeCustomerId: 'cus_xof' })
+      expect(hasLivePaidSubscription(row())).toBe(true)
+      untouched()
+
+      // 3. Portal: each workspace gets only its own customer and currency configuration.
+      await openPortal()
+      expect(mocks.portalSessionsCreate.mock.calls.at(-1)[0]).toMatchObject({ customer: 'cus_xof', configuration: 'bpc_xof' })
+      mocks.getWorkspaceMembership.mockResolvedValue({ workspaceId: WS_GMD, role: 'OWNER' })
+      await openPortal()
+      expect(mocks.portalSessionsCreate.mock.calls.at(-1)[0]).toMatchObject({ customer: 'cus_gmd', configuration: 'bpc_gmd' })
+      mocks.getWorkspaceMembership.mockResolvedValue({ workspaceId: WS_USD, role: 'OWNER' })
+      await openPortal()
+      expect(mocks.portalSessionsCreate.mock.calls.at(-1)[0]).toMatchObject({ customer: 'cus_usd', configuration: 'bpc_usd' })
+
+      // 4. Later XOF webhooks for the XOF customer never reach USD or GMD.
+      await deliver('customer.subscription.updated', xofSub, 'evt_xof_updated')
+      expect(row()).toMatchObject({ plan: 'GROWTH', stripePriceId: 'price_xof_growth' })
+      untouched()
+
+      await deliver('customer.subscription.deleted', { ...xofSub, status: 'canceled' }, 'evt_xof_deleted')
+      expect(row()).toMatchObject({ plan: 'FREE', stripeSubscriptionId: null, stripePriceId: 'price_xof_growth', stripeCustomerId: 'cus_xof' })
+      untouched()
     } finally {
       vi.unstubAllEnvs()
     }

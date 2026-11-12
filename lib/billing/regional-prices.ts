@@ -58,11 +58,11 @@ export const CHECKOUT_APPROVED_REGIONS: Record<BillingRegion, boolean> = {
 // when BOTH server-side signals hold:
 //   - VERCEL_ENV === 'preview'  (set by the Vercel platform; never the client)
 //   - BILLING_PREVIEW_REGIONS explicitly lists the region (comma-separated)
-// This list is the ceiling: a region missing here (XOF_ZONE) can never be
-// enabled from env, whatever BILLING_PREVIEW_REGIONS contains. Production
-// (VERCEL_ENV === 'production'), local dev and unknown environments ignore
-// BILLING_PREVIEW_REGIONS entirely.
-export const PREVIEW_CHECKOUT_REGIONS: readonly BillingRegion[] = ['GM']
+// This list is the ceiling: a region missing here (GLOBAL is approved in code
+// already) can never be enabled from env, whatever BILLING_PREVIEW_REGIONS
+// contains. Production (VERCEL_ENV === 'production'), local dev and unknown
+// environments ignore BILLING_PREVIEW_REGIONS entirely.
+export const PREVIEW_CHECKOUT_REGIONS: readonly BillingRegion[] = ['GM', 'XOF_ZONE']
 
 export function previewCheckoutRegions(env: PriceEnv = process.env): BillingRegion[] {
   if (env.VERCEL_ENV !== 'preview') return []

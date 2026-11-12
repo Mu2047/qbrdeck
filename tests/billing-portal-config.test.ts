@@ -136,6 +136,42 @@ describe('currencyForStripePrice', () => {
     expect(() => portalConfigurationForCurrency(currencyForStripePrice('price_gmd_growth', noGmd), noGmd)).toThrow(PortalConfigError)
   })
 
+  it.each([
+    ['Production + XOF flag',         { ...PRICE_ENV, VERCEL_ENV: 'production', BILLING_PREVIEW_REGIONS: 'GM,XOF_ZONE' }],
+    ['Preview without flag',          { ...PRICE_ENV, VERCEL_ENV: 'preview' }],
+    ['Preview with XOF_ZONE',         { ...PRICE_ENV, VERCEL_ENV: 'preview', BILLING_PREVIEW_REGIONS: 'XOF_ZONE' }],
+    ['Preview with GM,XOF_ZONE',      { ...PRICE_ENV, VERCEL_ENV: 'preview', BILLING_PREVIEW_REGIONS: 'GM,XOF_ZONE' }],
+  ])('U. %s: XOF → STRIPE_PORTAL_CONFIG_XOF only; GMD and USD unchanged', (_label, env) => {
+    const all = { ...env, ...PORTAL_ENV }
+    for (const p of ['price_xof_solo', 'price_xof_growth', 'price_xof_agency']) {
+      expect(portalConfigurationForCurrency(currencyForStripePrice(p, all), all)).toBe('bpc_xof')
+    }
+    for (const p of ['price_gmd_solo', 'price_gmd_growth', 'price_gmd_agency']) {
+      expect(portalConfigurationForCurrency(currencyForStripePrice(p, all), all)).toBe('bpc_gmd')
+    }
+    for (const p of ['price_usd_solo', 'price_usd_growth', 'price_usd_agency']) {
+      expect(portalConfigurationForCurrency(currencyForStripePrice(p, all), all)).toBe('bpc_usd')
+    }
+  })
+
+  it('V. XOF portal config missing → fails closed, never the USD or GMD configuration', () => {
+    const env = without({ ...PRICE_ENV, ...PORTAL_ENV }, 'STRIPE_PORTAL_CONFIG_XOF')
+    expect(() => portalConfigurationForCurrency(currencyForStripePrice('price_xof_growth', env), env))
+      .toThrow('STRIPE_PORTAL_CONFIG_XOF is not configured')
+    // The other currencies keep working.
+    expect(portalConfigurationForCurrency('GMD', env)).toBe('bpc_gmd')
+    expect(portalConfigurationForCurrency('USD', env)).toBe('bpc_usd')
+  })
+
+  it.each([
+    ['GMD', 'bpc_gmd'],
+    ['USD', 'bpc_usd'],
+  ] as const)('W. XOF portal config sharing the %s ID fails closed for both currencies', (other, sharedId) => {
+    const env = { ...PORTAL_ENV, STRIPE_PORTAL_CONFIG_XOF: sharedId }
+    expect(() => portalConfigurationForCurrency('XOF', env)).toThrow(PortalConfigError)
+    expect(() => portalConfigurationForCurrency(other, env)).toThrow(PortalConfigError)
+  })
+
   it('invalid price table (same ID in two cells) fails closed', () => {
     expect(() => currencyForStripePrice('price_usd_solo', { ...PRICE_ENV, STRIPE_PRICE_SOLO_GMD: 'price_usd_solo' }))
       .toThrow(BillingConfigError)
