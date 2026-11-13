@@ -18,6 +18,7 @@ import { isBillingCurrency } from './currencies'
 import { isBillingRegion, currencyForRegion } from './regions'
 import {
   BillingConfigError,
+  getAvailableRegions,
   getRegionalPrice,
   getRegionalPriceTable,
   isPaidPlan,
@@ -36,7 +37,14 @@ function reject(error: string, status: 400 | 500 = 400): CheckoutRequestResult {
   return { ok: false, status, error }
 }
 
-export function parseCheckoutRequest(body: unknown, env: PriceEnv = process.env): CheckoutRequestResult {
+// `workspaceId` is the ACTIVE workspace from the server-side session — never
+// from the body (any extra body field is rejected). It only matters for
+// regional checkout during Production certification; omitting it fails closed.
+export function parseCheckoutRequest(
+  body: unknown,
+  env: PriceEnv = process.env,
+  workspaceId: string | null = null,
+): CheckoutRequestResult {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return reject('Invalid request')
   const fields = body as Record<string, unknown>
   const keys   = Object.keys(fields)
@@ -62,8 +70,17 @@ export function parseCheckoutRequest(body: unknown, env: PriceEnv = process.env)
     if (currencyForRegion(region) !== currency)
       return reject('Currency does not match the selected billing region')
 
+    // getRegionalPrice validates the whole table first, so a duplicated Price
+    // ID throws BillingConfigError (→ 500) before the availability check,
+    // which would otherwise swallow it as "no regions".
     const price = getRegionalPrice(plan, region, env)
     if (!price.checkoutEnabled || !price.stripePriceId)
+      return reject('Checkout is not available for this billing region yet')
+
+    // The WHOLE region must be purchasable — every paid plan configured — not
+    // just the requested plan's cell — and, during Production certification,
+    // purchasable by THIS workspace.
+    if (!getAvailableRegions(env, workspaceId).includes(region))
       return reject('Checkout is not available for this billing region yet')
 
     return { ok: true, price: { ...price, stripePriceId: price.stripePriceId } }

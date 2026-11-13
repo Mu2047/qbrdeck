@@ -106,7 +106,7 @@ describe('Manage Subscription (SOURCE-CONTRACT)', () => {
 
 describe('plan-card upgrade controls (SOURCE-CONTRACT)', () => {
   it('the Upgrade/checkout BillingButton is rendered only when canManageBilling', () => {
-    expect(planCards).toMatch(/\{canManageBilling \? \(\s*<BillingButton planKey=\{planKey\} isCurrent=\{isCurrent\} checkoutAvailable=\{checkoutAvailable\} \/>/)
+    expect(planCards).toMatch(/\{canManageBilling \? \(\s*<BillingButton planKey=\{planKey\} isCurrent=\{isCurrent\} checkoutAvailable=\{checkoutAvailable\} region=\{region\} \/>/)
     // The only BillingButton in the plan cards is the gated one.
     expect(planCards.match(/<BillingButton\b/g)).toHaveLength(1)
   })
@@ -129,7 +129,7 @@ describe('plan and usage stay visible to every role (SOURCE-CONTRACT)', () => {
     expect(usageCard).toContain('label="Clients"')
     expect(usageCard).toContain('label="QBRs generated this month"')
     // Prices and features render for every plan card regardless of role.
-    expect(planCards).toContain('{formatRegionalPrice(planKey, region)}')
+    expect(planCards).toContain('{formatRegionalPrice(planKey, displayRegion)}')
     expect(planCards).toContain('buildFeatureList(planKey)')
     expect(billingSource).toContain('Current plan: <span className="font-medium text-navy-800">{PLAN_NAMES[currentPlan]}</span>')
   })

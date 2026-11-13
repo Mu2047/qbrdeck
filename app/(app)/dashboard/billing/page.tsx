@@ -2,14 +2,21 @@ import { auth } from '@clerk/nextjs/server'
 import { redirect } from 'next/navigation'
 import { PLAN_LIMITS, PLAN_NAMES, formatLimit, type PlanKey } from '@/lib/limits'
 import { formatPrice } from '@/lib/billing/format-price'
-import { PAID_PLANS, formatRegionalPrice, getAvailableRegions } from '@/lib/billing/regional-prices'
+import { PAID_PLANS, formatRegionalPrice } from '@/lib/billing/regional-prices'
+import { selectableRegions, resolvePageRegion, displayRegionForStoredPrice, regionSelectorLabel } from '@/lib/billing/checkout-region'
+import { hasLivePaidSubscription } from '@/lib/billing/checkout-request'
+import { REGIONS } from '@/lib/billing/regions'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceContext } from '@/lib/workspace'
 import { can } from '@/lib/permissions'
 import { Check, Zap } from 'lucide-react'
 import { BillingButton } from './billing-button'
 
-export default async function BillingPage() {
+export default async function BillingPage({
+  searchParams,
+}: {
+  searchParams?: { region?: string | string[] }
+}) {
   const { userId } = auth()
   if (!userId) redirect('/sign-in')
 
@@ -40,11 +47,36 @@ export default async function BillingPage() {
   })
   const seatsUsed = memberCount + pendingInviteCount
 
-  // USD only until regional checkout is certified. Amounts come from the
-  // canonical pricing config; checkout is offered only when the server has a
-  // configured, checkout-enabled Stripe Price for the region.
-  const region            = 'GLOBAL' as const
-  const checkoutAvailable = getAvailableRegions().includes(region)
+  // Region comes from server config only: selectableRegions() is ['GLOBAL']
+  // unless a region is enabled by BILLING_PREVIEW_REGIONS (Preview) or
+  // BILLING_PRODUCTION_REGIONS (Production; narrowed to the listed workspaces
+  // while BILLING_PRODUCTION_TEST_WORKSPACES is non-empty), so ?region= can
+  // never select anything else. The checkout route re-validates the region for
+  // the same workspace regardless. Amounts come from the canonical pricing config.
+  const regions = selectableRegions(process.env, workspaceId)
+
+  // Same live-subscription guard as the checkout route: a paid workspace
+  // never sees the region selector (and its checkout would be refused 409).
+  const guardSub = await prisma.subscription.findUnique({
+    where:  { workspaceId },
+    select: { plan: true, status: true, stripeStatus: true, stripeSubscriptionId: true },
+  })
+  const hasPaidSub         = hasLivePaidSubscription(guardSub)
+  const showRegionSelector = canManageBilling && regions.length > 1 && !hasLivePaidSubscription(guardSub)
+
+  // Without the selector the page is always GLOBAL/USD, whatever ?region= says.
+  const region            = showRegionSelector ? resolvePageRegion(searchParams?.region, process.env, workspaceId) : 'GLOBAL'
+  const checkoutAvailable = regions.includes(region)
+  const selectorLabel     = regionSelectorLabel()
+
+  // Price-card display only. A paid workspace shows the currency of its stored
+  // Stripe Price (unknown/missing → USD); ?region=, the checkout flags and the
+  // certification allow-list never apply. Checkout region and availability
+  // above are unchanged.
+  const storedPrice   = hasPaidSub
+    ? await prisma.subscription.findUnique({ where: { workspaceId }, select: { stripePriceId: true } })
+    : null
+  const displayRegion = hasPaidSub ? displayRegionForStoredPrice(storedPrice?.stripePriceId) : region
 
   return (
     <div className="p-8 max-w-5xl">
@@ -99,6 +131,23 @@ export default async function BillingPage() {
         </div>
       </div>
 
+      {/* ── Billing region selector (only when a regional checkout is enabled) ── */}
+      {showRegionSelector && (
+        <div className="mb-4 flex items-center gap-2 text-sm" aria-label={selectorLabel}>
+          <span className="text-gray-500">{selectorLabel}:</span>
+          {regions.map(code => (
+            <a
+              key={code}
+              href={`/dashboard/billing?region=${code}`}
+              aria-current={code === region ? 'true' : undefined}
+              className={code === region ? 'btn-primary text-xs py-1 px-3' : 'btn-secondary text-xs py-1 px-3'}
+            >
+              {REGIONS[code].currency} — {REGIONS[code].label}
+            </a>
+          ))}
+        </div>
+      )}
+
       {/* ── Plan cards ────────────────────────────────────────────────────────── */}
       <div className="grid md:grid-cols-4 gap-4">
 
@@ -138,7 +187,7 @@ export default async function BillingPage() {
                 {isCurrent && <span className="badge-gray">Current</span>}
               </div>
               <div className="mb-5">
-                <span className="text-3xl font-bold text-navy-800">{formatRegionalPrice(planKey, region)}</span>
+                <span className="text-3xl font-bold text-navy-800">{formatRegionalPrice(planKey, displayRegion)}</span>
                 <span className="text-gray-400 text-sm">/month</span>
               </div>
               <ul className="space-y-2 mb-6 flex-1">
@@ -149,7 +198,7 @@ export default async function BillingPage() {
                 ))}
               </ul>
               {canManageBilling ? (
-                <BillingButton planKey={planKey} isCurrent={isCurrent} checkoutAvailable={checkoutAvailable} />
+                <BillingButton planKey={planKey} isCurrent={isCurrent} checkoutAvailable={checkoutAvailable} region={region} />
               ) : isCurrent ? (
                 <button disabled className="btn-secondary w-full justify-center opacity-50 cursor-not-allowed">
                   Current plan

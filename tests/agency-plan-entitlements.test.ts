@@ -284,7 +284,9 @@ describe('checkout whitelist', () => {
   })
 
   it('the checkout route creates sessions only from the server-resolved price (SOURCE-CONTRACT)', () => {
-    expect(checkoutSource).toMatch(/const parsed = parseCheckoutRequest\(body\)/)
+    // The workspace (Production certification allow-list) is the session's
+    // active workspace, never a body field.
+    expect(checkoutSource).toMatch(/const parsed = parseCheckoutRequest\(body, process\.env, membership\.workspaceId\)/)
     expect(checkoutSource).toMatch(/line_items: \[\{ price: price\.stripePriceId, quantity: 1 \}\]/)
     expect(checkoutSource).not.toMatch(/process\.env\.STRIPE_PRICE_/)
   })
@@ -302,7 +304,7 @@ describe('Agency price and billing display', () => {
   })
 
   it('billing page renders plan price/limits from the canonical sources (SOURCE-CONTRACT)', () => {
-    expect(billingSource).toContain('{formatRegionalPrice(planKey, region)}')
+    expect(billingSource).toContain('{formatRegionalPrice(planKey, displayRegion)}')
     expect(billingSource).toMatch(/const limits\s+= PLAN_LIMITS\[currentPlan\]/)
     expect(billingSource).not.toMatch(/plan\.(price|priceId|clientLimit|qbrLimit|exportLimit|features)/)
     expect(billingSource).not.toMatch(/PLANS\[/)

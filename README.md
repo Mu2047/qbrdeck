@@ -60,6 +60,10 @@ npm install
 6. Set up webhook at: `https://yourdomain.com/api/webhooks/stripe`
    - Events: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`
 7. Copy webhook secret → `STRIPE_WEBHOOK_SECRET`
+8. Create one Customer Portal configuration per billing currency and copy each
+   ID (`bpc_...`) → `STRIPE_PORTAL_CONFIG_USD`, `_GMD`, `_XOF`
+   - Required: there is no fallback to Stripe's default portal. A missing
+     configuration makes "Manage Subscription" fail closed for that currency.
 
 ### 6. Configure Environment Variables
 

@@ -1,4 +1,5 @@
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
+import { getAuthorizedParties } from '@/lib/app-origin'
 
 const isProtectedPage = createRouteMatcher(['/dashboard(.*)'])
 const isProtectedApi = createRouteMatcher(['/api/((?!webhooks).*)'])
@@ -19,7 +20,7 @@ export default clerkMiddleware(
     }
   },
   {
-    authorizedParties: ['https://qbrdeck.misecuretechsolutions.com'],
+    authorizedParties: getAuthorizedParties(),
   }
 )
 

@@ -1,15 +1,20 @@
 'use client'
 
 import { useState } from 'react'
+import { checkoutRequestBody } from '@/lib/billing/checkout-region'
+import type { BillingRegion } from '@/lib/billing/regions'
+import type { PaidPlan } from '@/lib/billing/regional-prices'
 
 export function BillingButton({
   planKey,
   isCurrent,
   checkoutAvailable = false,
+  region = 'GLOBAL',
 }: {
   planKey: string
   isCurrent: boolean
   checkoutAvailable?: boolean
+  region?: BillingRegion
 }) {
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
@@ -30,14 +35,15 @@ export function BillingButton({
       }
 
       // ── Upgrade / checkout ───────────────────────────────────────────────
-      // Sends only the plan and billing region/currency. The server resolves
+      // Sends only the plan and billing region/currency (currency derived from
+      // the server-resolved region). The server re-validates both and resolves
       // the Stripe Price and amount — the browser never chooses either.
       if (!checkoutAvailable) { setError('Checkout is not available right now'); setLoading(false); return }
 
       const res  = await fetch('/api/billing/checkout', {
         method : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body   : JSON.stringify({ plan: planKey, region: 'GLOBAL', currency: 'USD' }),
+        body   : JSON.stringify(checkoutRequestBody(planKey as PaidPlan, region)),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.error ?? 'Something went wrong'); setLoading(false); return }

@@ -9,6 +9,8 @@ import {
   hasLivePaidSubscription,
   EXISTING_SUBSCRIPTION_MESSAGE,
 } from '@/lib/billing/checkout-request'
+import { resolveAppOrigin } from '@/lib/app-origin'
+import type { RegionalPrice } from '@/lib/billing/regional-prices'
 
 export async function POST(req: NextRequest) {
   try {
@@ -29,7 +31,9 @@ export async function POST(req: NextRequest) {
     // Server-controlled price only: the body names a plan/region/currency (or,
     // for the transition release, an exact configured USD priceId) and the
     // Stripe Price is resolved from server config — see lib/billing/checkout-request.ts.
-    const parsed = parseCheckoutRequest(body)
+    // The workspace ID (for the Production certification allow-list) is the
+    // session's active workspace, never anything the client sent.
+    const parsed = parseCheckoutRequest(body, process.env, membership.workspaceId)
     if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: parsed.status })
     const { price } = parsed
 
@@ -42,19 +46,30 @@ export async function POST(req: NextRequest) {
     if (hasLivePaidSubscription(existing))
       return NextResponse.json({ error: EXISTING_SUBSCRIPTION_MESSAGE, code: 'SUBSCRIPTION_EXISTS' }, { status: 409 })
 
+    // Regional (non-USD) prices are certified against Stripe before anything
+    // is created: env config only proves a Price ID is unique, not that it is
+    // the right currency, amount or interval. The USD path is unchanged.
+    if (price.region !== 'GLOBAL' && !(await isCertifiedRegionalPrice(price))) {
+      console.error(`[checkout] Regional Stripe Price failed certification for ${price.plan}/${price.region}`)
+      return NextResponse.json({ error: 'Billing is temporarily unavailable' }, { status: 500 })
+    }
+
     const customerId = await createOrRetrieveCustomer({
       workspaceId: membership.workspaceId,
       email: user.email,
       name: user.name ?? undefined,
     })
 
+    // Return to the exact trusted origin checkout started from (see lib/app-origin.ts).
+    const appOrigin = resolveAppOrigin(req)
+
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       payment_method_types: ['card'],
       line_items: [{ price: price.stripePriceId, quantity: 1 }],
       mode: 'subscription',
-      success_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/billing?success=true`,
-      cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/billing`,
+      success_url: `${appOrigin}/dashboard/billing?success=true`,
+      cancel_url: `${appOrigin}/dashboard/billing`,
       allow_promotion_codes: true,
       // plan/region/currency are an audit trail only — the webhook derives the
       // plan from the subscription's Stripe Price, never from metadata.
@@ -69,5 +84,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ url: session.url })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
+  }
+}
+
+// The configured Stripe Price must be exactly the approved one: active, in
+// the region's currency, at the approved amount, billed monthly. Any lookup
+// error or mismatch fails closed.
+async function isCertifiedRegionalPrice(price: RegionalPrice & { stripePriceId: string }): Promise<boolean> {
+  try {
+    const stripePrice = await stripe.prices.retrieve(price.stripePriceId)
+    return stripePrice.active === true
+      && stripePrice.currency === price.currency.toLowerCase()
+      && stripePrice.unit_amount === price.unitAmountMinor
+      && stripePrice.type === 'recurring'
+      && stripePrice.recurring?.interval === 'month'
+      && (stripePrice.recurring?.interval_count ?? 1) === 1
+  } catch {
+    return false
   }
 }
