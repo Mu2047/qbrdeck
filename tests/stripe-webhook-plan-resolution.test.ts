@@ -50,6 +50,9 @@ vi.mock('resend', () => ({
 }))
 
 import { POST } from '@/app/api/webhooks/stripe/route'
+import { PAYMENT_GRACE_PERIOD_DAYS, hasPaidAccess, type SubscriptionAccess } from '@/lib/subscription-access'
+import type { InvoiceParent } from '@/lib/stripe-invoice-subscription'
+import type Stripe from 'stripe'
 
 const PRICE_ENV = {
   STRIPE_PRICE_SOLO:   'price_live_solo',
@@ -518,5 +521,226 @@ describe('stale / out-of-order subscription events — subscription authority', 
     expect(writes()[0].data).not.toHaveProperty('exportCount')
     expect(writes()[0].data).not.toHaveProperty('periodStart')
     expect(stored).toMatchObject({ qbrCount: 3, exportCount: 1 })
+  })
+})
+
+// ─── Invoice webhooks across Stripe API versions ────────────────────────────
+// legacy:  invoice.subscription (≤ 2024-04-10; the installed stripe@15 types)
+// current: invoice.parent.subscription_details.subscription, no top-level
+//          `subscription` key (2025-03-31.basil+; this account's webhook
+//          endpoint is on 2026-04-22.dahlia)
+
+type InvoiceFixture = Pick<Stripe.Invoice, 'id' | 'object' | 'customer' | 'billing_reason' | 'status'> & {
+  subscription?: string | null
+  parent?:       InvoiceParent | null
+}
+
+type InvoiceShape = 'legacy' | 'current'
+const SHAPES: [string, InvoiceShape][] = [
+  ['legacy invoice.subscription', 'legacy'],
+  ['current invoice.parent.subscription_details', 'current'],
+]
+
+function invoice(shape: InvoiceShape, subscriptionId: string | null, overrides: Partial<InvoiceFixture> = {}): InvoiceFixture {
+  const base: InvoiceFixture = { id: 'in_1', object: 'invoice', customer: 'cus_1', billing_reason: 'subscription_cycle', status: 'open' }
+  const link: Partial<InvoiceFixture> = shape === 'legacy'
+    ? { subscription: subscriptionId }
+    : { parent: subscriptionId ? { type: 'subscription_details', subscription_details: { subscription: subscriptionId, metadata: {} } } : null }
+  return { ...base, ...link, ...overrides }
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+// Access as the app computes it from the stored row.
+function storedAccess(): SubscriptionAccess {
+  const row = stored!
+  return {
+    plan: row.plan, status: row.status, stripeStatus: row.stripeStatus,
+    pastDueAt: row.pastDueAt, graceEndsAt: row.graceEndsAt, cancelAtPeriodEnd: row.cancelAtPeriodEnd ?? false,
+  }
+}
+
+function expectNoInvoiceEffects() {
+  expectNoSubscriptionWrite()
+  expect(mocks.resendSend).not.toHaveBeenCalled()
+}
+
+describe('invoice webhooks — Stripe API-version compatibility', () => {
+  describe.each(SHAPES)('%s', (_label, shape) => {
+    it('A/B/D. invoice.payment_failed on the current subscription → past_due, grace started, owner emailed once', async () => {
+      stripeState.set('sub_1', subscription('price_live_solo', 'past_due'))
+      const res = await deliver({ id: 'evt_pf', type: 'invoice.payment_failed', object: invoice(shape, 'sub_1') })
+
+      expect(res.status).toBe(200)
+      expect(lastEventStatus()).toBe('PROCESSED')
+      expect(mocks.subscriptionsRetrieve).toHaveBeenCalledWith('sub_1')
+      expect(writes()).toHaveLength(1)
+      expect(writes()[0].where).toEqual({ workspaceId: 'ws_1', stripeSubscriptionId: 'sub_1' })
+      expect(writes()[0].data).not.toHaveProperty('plan')
+      expect(stored).toMatchObject({ status: 'past_due', stripeStatus: 'past_due', plan: 'SOLO' })
+      expect(stored!.pastDueAt).toBeInstanceOf(Date)
+      expect(stored!.graceEndsAt.getTime() - stored!.pastDueAt.getTime()).toBe(PAYMENT_GRACE_PERIOD_DAYS * DAY_MS)
+      expect(mocks.resendSend).toHaveBeenCalledTimes(1)
+      expect(mocks.resendSend.mock.calls[0][0].to).toBe('owner@example.com')
+      // Grace keeps paid access — the failure does not revoke the plan.
+      expect(hasPaidAccess(storedAccess())).toBe(true)
+    })
+
+    it('E. invoice.paid on the current subscription clears grace and records recovery', async () => {
+      stored = storedRow({ status: 'past_due', stripeStatus: 'past_due', pastDueAt: new Date(), graceEndsAt: new Date(Date.now() + DAY_MS) })
+      stripeState.set('sub_1', subscription('price_live_solo', 'active'))
+      const res = await deliver({ id: 'evt_paid', type: 'invoice.paid', object: invoice(shape, 'sub_1', { status: 'paid' }) })
+
+      expect(res.status).toBe(200)
+      expect(lastEventStatus()).toBe('PROCESSED')
+      expect(writes()).toHaveLength(1)
+      expect(writes()[0].where).toEqual({ workspaceId: 'ws_1', stripeSubscriptionId: 'sub_1' })
+      expect(writes()[0].data).not.toHaveProperty('plan')
+      expect(stored).toMatchObject({ status: 'active', stripeStatus: 'active', pastDueAt: null, graceEndsAt: null, plan: 'SOLO' })
+      expect(mocks.resendSend).not.toHaveBeenCalled()
+    })
+
+    it.each(['invoice.paid', 'invoice.payment_failed'])(
+      'F. %s for an old subscription cannot modify the newer current one',
+      async (type) => {
+        const pastDueAt   = new Date(1_700_000_000_000)
+        const graceEndsAt = new Date(1_700_000_000_000 + 7 * DAY_MS)
+        stored = storedRow({ stripeSubscriptionId: SUB_NEW, status: 'past_due', stripeStatus: 'past_due', pastDueAt, graceEndsAt })
+        const before = { ...stored }
+        const res = await deliver({ id: `evt_old_${type}`, type, object: invoice(shape, SUB_OLD) })
+
+        expect(res.status).toBe(200)
+        expect(lastEventStatus()).toBe('PROCESSED')
+        expect(mocks.subscriptionsRetrieve).not.toHaveBeenCalled()
+        expectNoInvoiceEffects()
+        expect(stored).toEqual(before)
+      },
+    )
+
+    it.each(['invoice.paid', 'invoice.payment_failed'])(
+      'G. %s whose current subscription Stripe does not know → event FAILED, nothing written',
+      async (type) => {
+        // stored owns sub_1 but Stripe has no such subscription
+        const res = await deliver({ id: `evt_unknown_${type}`, type, object: invoice(shape, 'sub_1') })
+        expect(res.status).toBe(500)
+        expect(lastEventStatus()).toBe('FAILED')
+        expectNoInvoiceEffects()
+      },
+    )
+
+    it.each(['invoice.paid', 'invoice.payment_failed'])(
+      'G. %s whose subscription belongs to another customer → event FAILED, nothing written',
+      async (type) => {
+        stripeState.set('sub_1', { ...subscription('price_live_solo', 'past_due'), customer: 'cus_other' })
+        const res = await deliver({ id: `evt_foreign_${type}`, type, object: invoice(shape, 'sub_1') })
+        expect(res.status).toBe(500)
+        expect(lastEventStatus()).toBe('FAILED')
+        expectNoInvoiceEffects()
+      },
+    )
+
+    it.each(['invoice.paid', 'invoice.payment_failed'])(
+      'H. %s: Stripe error retrieving the subscription → event FAILED; the retry then succeeds',
+      async (type) => {
+        mocks.subscriptionsRetrieve.mockRejectedValueOnce(Object.assign(new Error('connection reset'), { type: 'StripeConnectionError' }))
+        const first = await deliver({ id: `evt_retry_${type}`, type, object: invoice(shape, 'sub_1') })
+        expect(first.status).toBe(500)
+        expect(lastEventStatus()).toBe('FAILED')
+        expectNoInvoiceEffects()
+
+        stripeState.set('sub_1', subscription('price_live_solo', type === 'invoice.paid' ? 'active' : 'past_due'))
+        mocks.stripeEventFindUnique.mockResolvedValue({ status: 'FAILED' })
+        const retry = await deliver({ id: `evt_retry_${type}`, type, object: invoice(shape, 'sub_1') })
+        expect(retry.status).toBe(200)
+        expect(lastEventStatus()).toBe('PROCESSED')
+        expect(writes()).toHaveLength(1)
+      },
+    )
+
+    it.each(['PROCESSED', 'PROCESSING'])('I. a duplicate %s event id is not processed again', async (status) => {
+      stripeState.set('sub_1', subscription('price_live_solo', 'past_due'))
+      mocks.stripeEventFindUnique.mockResolvedValue({ status })
+      const res = await deliver({ id: 'evt_dup_pf', type: 'invoice.payment_failed', object: invoice(shape, 'sub_1') })
+      expect(res.status).toBe(200)
+      expect(mocks.subscriptionsRetrieve).not.toHaveBeenCalled()
+      expectNoInvoiceEffects()
+    })
+
+    it('J. a redelivered payment_failed event sends no second email; a later failed attempt keeps the original grace window', async () => {
+      // Stateful StripeEvent table so redelivery hits the real idempotency guard.
+      const events = new Map<string, { status: string }>()
+      mocks.stripeEventFindUnique.mockImplementation(async ({ where }: any) => events.get(where.stripeEventId) ?? null)
+      mocks.stripeEventUpsert.mockImplementation(async ({ where }: any) => { events.set(where.stripeEventId, { status: 'PROCESSING' }) })
+      mocks.stripeEventUpdate.mockImplementation(async ({ where, data }: any) => { events.set(where.stripeEventId, { status: data.status }) })
+      stripeState.set('sub_1', subscription('price_live_solo', 'past_due'))
+
+      await deliver({ id: 'evt_pf_once', type: 'invoice.payment_failed', object: invoice(shape, 'sub_1') })
+      const { pastDueAt, graceEndsAt } = stored!
+      const again = await deliver({ id: 'evt_pf_once', type: 'invoice.payment_failed', object: invoice(shape, 'sub_1') })
+
+      expect(await again.json()).toEqual({ received: true, idempotent: true })
+      expect(mocks.resendSend).toHaveBeenCalledTimes(1)
+      expect(writes()).toHaveLength(1)
+
+      // A distinct failed retry attempt (new event id) is a new notification,
+      // as before, but never restarts or extends the grace period.
+      await deliver({ id: 'evt_pf_attempt_2', type: 'invoice.payment_failed', object: invoice(shape, 'sub_1') })
+      expect(writes()[1].data).not.toHaveProperty('pastDueAt')
+      expect(writes()[1].data).not.toHaveProperty('graceEndsAt')
+      expect(stored).toMatchObject({ pastDueAt, graceEndsAt })
+      expect(mocks.resendSend).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  describe('C. a missing or unsafe subscription relationship fails the event — never a 200 no-op', () => {
+    const cases: [string, InvoiceFixture][] = [
+      ['current shape, parent null',                          invoice('current', null)],
+      ['current shape, subscription_details without an id',   invoice('current', null, { parent: { type: 'subscription_details', subscription_details: { metadata: {} } } })],
+      ['current shape, quote_details parent',                 invoice('current', null, { parent: { type: 'quote_details', quote_details: { quote: 'qt_1' } }, billing_reason: 'quote_accept' })],
+      ['legacy shape, subscription null',                     invoice('legacy', null)],
+      ['both shapes, disagreeing',                            { ...invoice('current', 'sub_1'), subscription: SUB_OLD }],
+      ['malformed subscription reference',                    invoice('current', 'in_not_a_subscription')],
+    ]
+
+    describe.each(['invoice.paid', 'invoice.payment_failed'])('%s', (type) => {
+      it.each(cases)('%s → 500, FAILED, no lookup, write, grace or email', async (_label, object) => {
+        stored = storedRow({ status: 'past_due', stripeStatus: 'past_due', pastDueAt: new Date(1), graceEndsAt: new Date(2) })
+        const before = { ...stored }
+        const res = await deliver({ id: `evt_c_${type}`, type, object })
+
+        expect(res.status).toBe(500)
+        expect(lastEventStatus()).toBe('FAILED')
+        expect(mocks.stripeEventUpdate.mock.calls.at(-1)?.[0].data.errorMessage).toMatch(/invoice in_1/)
+        expect(mocks.subscriptionsRetrieve).not.toHaveBeenCalled()
+        expect(mocks.customersRetrieve).not.toHaveBeenCalled()
+        expectNoInvoiceEffects()
+        expect(stored).toEqual(before)
+      })
+    })
+
+    it.each(['invoice.paid', 'invoice.payment_failed'])(
+      'control: %s for an invoice Stripe marks manual (unrelated to a subscription) is acknowledged with no effect',
+      async (type) => {
+        const res = await deliver({ id: `evt_manual_${type}`, type, object: invoice('current', null, { billing_reason: 'manual' }) })
+        expect(res.status).toBe(200)
+        expect(lastEventStatus()).toBe('PROCESSED')
+        expect(mocks.subscriptionsRetrieve).not.toHaveBeenCalled()
+        expectNoInvoiceEffects()
+      },
+    )
+  })
+
+  it('regression: the current-shape failure path no longer drops paid access without grace', async () => {
+    // Stripe sends subscription.updated (past_due) and invoice.payment_failed
+    // for one failed renewal. Before the fix only the first took effect,
+    // leaving past_due with no grace window → no paid access.
+    stripeState.set('sub_1', subscription('price_live_solo', 'past_due'))
+    await deliver({ id: 'evt_su_pd', type: 'customer.subscription.updated', object: stripeState.get('sub_1') })
+    expect(hasPaidAccess(storedAccess())).toBe(false)
+
+    await deliver({ id: 'evt_pf_pd', type: 'invoice.payment_failed', object: invoice('current', 'sub_1') })
+    expect(stored).toMatchObject({ stripeStatus: 'past_due', plan: 'SOLO' })
+    expect(hasPaidAccess(storedAccess())).toBe(true)
+    expect(mocks.resendSend).toHaveBeenCalledTimes(1)
   })
 })

@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { PAYMENT_GRACE_PERIOD_DAYS } from '@/lib/subscription-access'
 import { getSubscriptionPeriod } from '@/lib/stripe-subscription-period'
 import { resolvePlanFromStripePrice } from '@/lib/billing/regional-prices'
+import { resolveInvoiceSubscription } from '@/lib/stripe-invoice-subscription'
 import type Stripe from 'stripe'
 
 // Plan comes ONLY from an approved Stripe Price mapping (any region/currency
@@ -344,11 +345,43 @@ async function handleSubscriptionDeleted(sub: Stripe.Subscription): Promise<void
   assertWritten(result.count, workspaceId, sub.id)
 }
 
-async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
-  const customerId     = invoice.customer as string
-  const subscriptionId = invoice.subscription as string
+// ─── Invoice → subscription ─────────────────────────────────────────────────
+// The subscription comes from the invoice payload via
+// resolveInvoiceSubscription (newer `parent.subscription_details` shape and
+// legacy `subscription`). An unresolvable subscription invoice throws (event
+// FAILED, Stripe retries); only an invoice Stripe marks as unrelated to any
+// subscription is acknowledged without effect.
 
-  if (!subscriptionId) return
+function stripeIdOf(ref: string | { id: string } | null | undefined): string | null {
+  if (!ref) return null
+  return typeof ref === 'string' ? ref : ref.id
+}
+
+function resolveInvoiceTarget(invoice: Stripe.Invoice, eventType: string): { customerId: string; subscriptionId: string } | null {
+  const link = resolveInvoiceSubscription(invoice)
+  if (link.kind === 'none') {
+    console.log(`[webhook] ${eventType}: invoice ${invoice.id} is not subscription-generated; no billing state change`)
+    return null
+  }
+
+  const customerId = stripeIdOf(invoice.customer)
+  if (!customerId) throw new Error(`${eventType}: invoice ${invoice.id} has no customer`)
+
+  return { customerId, subscriptionId: link.subscriptionId }
+}
+
+// The retrieved subscription must belong to the invoice's customer; anything
+// else is drift that must not be written.
+function assertSubscriptionCustomer(sub: Stripe.Subscription, customerId: string, eventType: string): void {
+  if (stripeIdOf(sub.customer) !== customerId) {
+    throw new Error(`${eventType}: subscription ${sub.id} does not belong to invoice customer ${customerId}`)
+  }
+}
+
+async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
+  const target = resolveInvoiceTarget(invoice, 'invoice.paid')
+  if (!target) return
+  const { customerId, subscriptionId } = target
 
   const workspaceId = await resolveWorkspaceId(customerId)
   if (!workspaceId) {
@@ -368,6 +401,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   }
 
   const sub    = await stripe.subscriptions.retrieve(subscriptionId)
+  assertSubscriptionCustomer(sub, customerId, 'invoice.paid')
   const period = getSubscriptionPeriod(sub, sub.items.data[0]?.price.id)
 
   const newPeriodStart = period.start
@@ -398,10 +432,9 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
 }
 
 async function handleInvoicePaymentFailed(invoice: Stripe.Invoice): Promise<void> {
-  const customerId     = invoice.customer as string
-  const subscriptionId = invoice.subscription as string
-
-  if (!subscriptionId) return
+  const target = resolveInvoiceTarget(invoice, 'invoice.payment_failed')
+  if (!target) return
+  const { customerId, subscriptionId } = target
 
   const workspaceId = await resolveWorkspaceId(customerId)
   if (!workspaceId) {
@@ -421,6 +454,7 @@ async function handleInvoicePaymentFailed(invoice: Stripe.Invoice): Promise<void
   }
 
   const sub = await stripe.subscriptions.retrieve(subscriptionId)
+  assertSubscriptionCustomer(sub, customerId, 'invoice.payment_failed')
 
   const now = new Date()
   const graceUpdate = existing.pastDueAt
