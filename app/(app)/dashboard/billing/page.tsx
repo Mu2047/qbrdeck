@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation'
 import { PLAN_LIMITS, PLAN_NAMES, formatLimit, type PlanKey } from '@/lib/limits'
 import { formatPrice } from '@/lib/billing/format-price'
 import { PAID_PLANS, formatRegionalPrice } from '@/lib/billing/regional-prices'
-import { selectableRegions, resolvePageRegion, displayRegionForStoredPrice } from '@/lib/billing/checkout-region'
+import { selectableRegions, resolvePageRegion, displayRegionForStoredPrice, regionSelectorLabel } from '@/lib/billing/checkout-region'
 import { hasLivePaidSubscription } from '@/lib/billing/checkout-request'
 import { REGIONS } from '@/lib/billing/regions'
 import { prisma } from '@/lib/prisma'
@@ -47,12 +47,13 @@ export default async function BillingPage({
   })
   const seatsUsed = memberCount + pendingInviteCount
 
-  // Region comes from server config only: selectableRegions() is ['GLOBAL'] in
-  // Production and in any Preview without an enabled BILLING_PREVIEW_REGIONS
-  // region (GM, XOF_ZONE), so ?region= can never select anything else there. The checkout
-  // route re-validates the region regardless. Amounts come from the canonical
-  // pricing config.
-  const regions = selectableRegions()
+  // Region comes from server config only: selectableRegions() is ['GLOBAL']
+  // unless a region is enabled by BILLING_PREVIEW_REGIONS (Preview) or
+  // BILLING_PRODUCTION_REGIONS (Production; narrowed to the listed workspaces
+  // while BILLING_PRODUCTION_TEST_WORKSPACES is non-empty), so ?region= can
+  // never select anything else. The checkout route re-validates the region for
+  // the same workspace regardless. Amounts come from the canonical pricing config.
+  const regions = selectableRegions(process.env, workspaceId)
 
   // Same live-subscription guard as the checkout route: a paid workspace
   // never sees the region selector (and its checkout would be refused 409).
@@ -64,12 +65,14 @@ export default async function BillingPage({
   const showRegionSelector = canManageBilling && regions.length > 1 && !hasLivePaidSubscription(guardSub)
 
   // Without the selector the page is always GLOBAL/USD, whatever ?region= says.
-  const region            = showRegionSelector ? resolvePageRegion(searchParams?.region) : 'GLOBAL'
+  const region            = showRegionSelector ? resolvePageRegion(searchParams?.region, process.env, workspaceId) : 'GLOBAL'
   const checkoutAvailable = regions.includes(region)
+  const selectorLabel     = regionSelectorLabel()
 
   // Price-card display only. A paid workspace shows the currency of its stored
-  // Stripe Price (unknown/missing → USD); ?region= and the Preview flag never
-  // apply. Checkout region and availability above are unchanged.
+  // Stripe Price (unknown/missing → USD); ?region=, the checkout flags and the
+  // certification allow-list never apply. Checkout region and availability
+  // above are unchanged.
   const storedPrice   = hasPaidSub
     ? await prisma.subscription.findUnique({ where: { workspaceId }, select: { stripePriceId: true } })
     : null
@@ -128,10 +131,10 @@ export default async function BillingPage({
         </div>
       </div>
 
-      {/* ── Preview-only billing region selector ─────────────────────────────── */}
+      {/* ── Billing region selector (only when a regional checkout is enabled) ── */}
       {showRegionSelector && (
-        <div className="mb-4 flex items-center gap-2 text-sm" aria-label="Billing currency (Preview only)">
-          <span className="text-gray-500">Billing currency (Preview only):</span>
+        <div className="mb-4 flex items-center gap-2 text-sm" aria-label={selectorLabel}>
+          <span className="text-gray-500">{selectorLabel}:</span>
           {regions.map(code => (
             <a
               key={code}

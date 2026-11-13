@@ -11,11 +11,18 @@
 //   - Stripe Price IDs come from server env only. The browser never supplies
 //     a Price ID or an amount that the server trusts.
 //   - A region is purchasable only when the region is approved for checkout
-//     (in code, or Preview-only via isCheckoutApproved) AND every paid plan
-//     has a configured Stripe Price ID.
+//     (in code, Preview-only via BILLING_PREVIEW_REGIONS, or Production-only
+//     via BILLING_PRODUCTION_REGIONS — see isCheckoutApproved) AND every paid
+//     plan has a configured Stripe Price ID. During Production certification
+//     (BILLING_PRODUCTION_TEST_WORKSPACES non-empty) the region is further
+//     limited to the listed workspaces — see isRegionCheckoutAllowedForWorkspace.
 //   - `recognized` (webhook may map it) is separate from `checkoutEnabled`
 //     (new customers may buy it), so a retired/grandfathered price can keep
-//     resolving to its plan after it stops being sold.
+//     resolving to its plan after it stops being sold. Recognition depends ONLY
+//     on the Price ID being configured: no checkout flag, environment or
+//     workspace allow-list ever affects it. Turning a region's checkout OFF
+//     therefore never orphans an existing subscriber (webhook plan resolution,
+//     portal routing and paid display keep working).
 //   - Unknown or missing Price IDs fail closed — they never resolve to FREE.
 //
 // Env naming:
@@ -64,17 +71,74 @@ export const CHECKOUT_APPROVED_REGIONS: Record<BillingRegion, boolean> = {
 // environments ignore BILLING_PREVIEW_REGIONS entirely.
 export const PREVIEW_CHECKOUT_REGIONS: readonly BillingRegion[] = ['GM', 'XOF_ZONE']
 
-export function previewCheckoutRegions(env: PriceEnv = process.env): BillingRegion[] {
-  if (env.VERCEL_ENV !== 'preview') return []
-  const raw = env.BILLING_PREVIEW_REGIONS
+// Comma-separated list → trimmed, non-empty entries.
+function parseList(raw: unknown): string[] {
   if (typeof raw !== 'string') return []
-  const requested = new Set(raw.split(',').map(s => s.trim()).filter(Boolean))
-  // Exact, case-sensitive codes only; unknown values are ignored.
-  return PREVIEW_CHECKOUT_REGIONS.filter(region => requested.has(region))
+  return raw.split(',').map(s => s.trim()).filter(Boolean)
 }
 
+// Exact, case-sensitive codes only; unknown values are ignored. The ceiling
+// decides which regions may ever be returned.
+function regionsFromList(raw: unknown, ceiling: readonly BillingRegion[]): BillingRegion[] {
+  const requested = new Set(parseList(raw))
+  return ceiling.filter(region => requested.has(region))
+}
+
+export function previewCheckoutRegions(env: PriceEnv = process.env): BillingRegion[] {
+  if (env.VERCEL_ENV !== 'preview') return []
+  return regionsFromList(env.BILLING_PREVIEW_REGIONS, PREVIEW_CHECKOUT_REGIONS)
+}
+
+// Production checkout kill-switch / enablement. A region listed here becomes
+// purchasable for NEW checkouts only when BOTH server-side signals hold:
+//   - VERCEL_ENV === 'production'  (set by the Vercel platform; never the client)
+//   - BILLING_PRODUCTION_REGIONS explicitly lists the region (comma-separated)
+// Defaults OFF: missing/empty env → no regional Production checkout. This list
+// is the hard ceiling — env can never enable a region missing here. Preview,
+// development and unknown environments ignore BILLING_PRODUCTION_REGIONS.
+//
+// Removing a region from BILLING_PRODUCTION_REGIONS blocks NEW checkouts only.
+// Existing subscribers stay recognized (see `recognized` above), as long as
+// the region's STRIPE_PRICE_* env vars stay configured.
+export const PRODUCTION_CHECKOUT_REGIONS: readonly BillingRegion[] = ['GM', 'XOF_ZONE']
+
+export function productionCheckoutRegions(env: PriceEnv = process.env): BillingRegion[] {
+  if (env.VERCEL_ENV !== 'production') return []
+  return regionsFromList(env.BILLING_PRODUCTION_REGIONS, PRODUCTION_CHECKOUT_REGIONS)
+}
+
+// Optional Production certification allow-list: exact workspace IDs
+// (comma-separated, trimmed, case-sensitive). Production only.
+//   - non-empty → a Production-enabled region is offered ONLY to these workspaces
+//   - empty/missing → public rollout of the enabled regions
+// It narrows NEW regional checkout only. It never affects GLOBAL/USD, Preview
+// certification, or recognition of existing subscriptions.
+export function productionTestWorkspaces(env: PriceEnv = process.env): string[] {
+  if (env.VERCEL_ENV !== 'production') return []
+  return parseList(env.BILLING_PRODUCTION_TEST_WORKSPACES)
+}
+
+// Region-level gate (no workspace context). Used to build the price table.
 export function isCheckoutApproved(region: BillingRegion, env: PriceEnv = process.env): boolean {
-  return CHECKOUT_APPROVED_REGIONS[region] === true || previewCheckoutRegions(env).includes(region)
+  return CHECKOUT_APPROVED_REGIONS[region] === true
+    || previewCheckoutRegions(env).includes(region)
+    || productionCheckoutRegions(env).includes(region)
+}
+
+// Workspace-level gate for NEW checkout. Fails closed: a missing workspace ID
+// is never on the certification allow-list. The workspace ID must come from
+// the server-side session, never from the request body.
+export function isRegionCheckoutAllowedForWorkspace(
+  region: BillingRegion,
+  workspaceId: string | null | undefined,
+  env: PriceEnv = process.env,
+): boolean {
+  if (CHECKOUT_APPROVED_REGIONS[region] === true) return true       // GLOBAL/USD — always
+  if (previewCheckoutRegions(env).includes(region)) return true     // Preview semantics unchanged
+  if (!productionCheckoutRegions(env).includes(region)) return false
+  const allowList = productionTestWorkspaces(env)
+  if (allowList.length === 0) return true                           // public rollout
+  return typeof workspaceId === 'string' && allowList.includes(workspaceId)
 }
 
 export interface RegionalPrice {
@@ -178,9 +242,13 @@ export function getRegionalPrice(plan: PaidPlan, region: BillingRegion, env: Pri
   return price
 }
 
-// Regions a new customer can actually check out in: approved in code and
-// every paid plan configured. Fails closed (no regions) on bad config.
-export function getAvailableRegions(env: PriceEnv = process.env): BillingRegion[] {
+// Regions a new customer in `workspaceId` can actually check out in: approved
+// (code / Preview / Production), every paid plan configured, and — during
+// Production certification — the workspace on the allow-list. Fails closed (no
+// regions) on bad config. Omitting workspaceId is treated as "not listed", so
+// a caller without workspace context can never open a region under
+// certification.
+export function getAvailableRegions(env: PriceEnv = process.env, workspaceId: string | null = null): BillingRegion[] {
   let table: RegionalPrice[]
   try {
     table = getRegionalPriceTable(env)
@@ -190,6 +258,7 @@ export function getAvailableRegions(env: PriceEnv = process.env): BillingRegion[
   return Object.values(REGIONS)
     .map(r => r.code)
     .filter(code => PAID_PLANS.every(plan => table.find(p => p.plan === plan && p.region === code)?.checkoutEnabled))
+    .filter(code => isRegionCheckoutAllowedForWorkspace(code, workspaceId, env))
 }
 
 // Webhook entry point: the ONLY way a Stripe Price becomes a Plan.

@@ -4,9 +4,11 @@
 // Stripe, no DB.
 //
 // The page offers a region only when the server would accept a checkout for
-// it (getAvailableRegions), so a hidden or forged region never gets further
-// than the server-side validation in lib/billing/checkout-request.ts. In
-// Production this is always ['GLOBAL'], so no selector is ever rendered.
+// it (getAvailableRegions, for the same workspace), so a hidden or forged
+// region never gets further than the server-side validation in
+// lib/billing/checkout-request.ts. In Production without
+// BILLING_PRODUCTION_REGIONS this is always ['GLOBAL'], so no selector is ever
+// rendered.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { DEFAULT_REGION, currencyForRegion, type BillingRegion } from './regions'
@@ -15,13 +17,23 @@ import { getAvailableRegions, getRegionalPriceTable, type PaidPlan } from './reg
 
 type PriceEnv = Record<string, string | undefined>
 
-export function selectableRegions(env: PriceEnv = process.env): BillingRegion[] {
-  return getAvailableRegions(env)
+// `workspaceId` is the active workspace; it only matters during Production
+// certification (BILLING_PRODUCTION_TEST_WORKSPACES). Omitted → not listed.
+export function selectableRegions(env: PriceEnv = process.env, workspaceId: string | null = null): BillingRegion[] {
+  return getAvailableRegions(env, workspaceId)
+}
+
+// Label for the region selector. Preview keeps an explicit test marker;
+// Production (regional rollout or certification) shows a plain label.
+export function regionSelectorLabel(env: PriceEnv = process.env): string {
+  return env.VERCEL_ENV === 'preview' ? 'Billing currency (Preview test mode)' : 'Billing currency'
 }
 
 // DISPLAY ONLY — which region's prices a paid workspace's plan cards show.
 // Derived from the workspace's stored Stripe Price (the same recognized-price
-// lookup the portal uses), never from a query parameter or the Preview flag.
+// lookup the portal uses), never from a query parameter, a checkout flag or
+// the certification allow-list — so it stays regional after that region's
+// checkout is switched off.
 // Missing, unknown or misconfigured Price IDs fall back to the default region
 // (USD), the page's established behaviour — never a guessed regional currency.
 // Grants nothing: checkout, portal and entitlements resolve independently.
@@ -34,10 +46,15 @@ export function displayRegionForStoredPrice(priceId: string | null | undefined, 
   }
 }
 
-// Untrusted input (a query parameter). Anything not currently selectable —
-// unknown, disabled, wrong type — resolves to the default region.
-export function resolvePageRegion(requested: unknown, env: PriceEnv = process.env): BillingRegion {
-  const selectable = selectableRegions(env)
+// Untrusted input (a query parameter). Anything not currently selectable for
+// this workspace — unknown, disabled, not on the certification allow-list,
+// wrong type — resolves to the default region.
+export function resolvePageRegion(
+  requested: unknown,
+  env: PriceEnv = process.env,
+  workspaceId: string | null = null,
+): BillingRegion {
+  const selectable = selectableRegions(env, workspaceId)
   return typeof requested === 'string' && (selectable as string[]).includes(requested)
     ? (requested as BillingRegion)
     : DEFAULT_REGION

@@ -37,7 +37,14 @@ function reject(error: string, status: 400 | 500 = 400): CheckoutRequestResult {
   return { ok: false, status, error }
 }
 
-export function parseCheckoutRequest(body: unknown, env: PriceEnv = process.env): CheckoutRequestResult {
+// `workspaceId` is the ACTIVE workspace from the server-side session — never
+// from the body (any extra body field is rejected). It only matters for
+// regional checkout during Production certification; omitting it fails closed.
+export function parseCheckoutRequest(
+  body: unknown,
+  env: PriceEnv = process.env,
+  workspaceId: string | null = null,
+): CheckoutRequestResult {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return reject('Invalid request')
   const fields = body as Record<string, unknown>
   const keys   = Object.keys(fields)
@@ -71,8 +78,9 @@ export function parseCheckoutRequest(body: unknown, env: PriceEnv = process.env)
       return reject('Checkout is not available for this billing region yet')
 
     // The WHOLE region must be purchasable — every paid plan configured — not
-    // just the requested plan's cell.
-    if (!getAvailableRegions(env).includes(region))
+    // just the requested plan's cell — and, during Production certification,
+    // purchasable by THIS workspace.
+    if (!getAvailableRegions(env, workspaceId).includes(region))
       return reject('Checkout is not available for this billing region yet')
 
     return { ok: true, price: { ...price, stripePriceId: price.stripePriceId } }

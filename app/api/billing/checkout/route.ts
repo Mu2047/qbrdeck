@@ -31,7 +31,9 @@ export async function POST(req: NextRequest) {
     // Server-controlled price only: the body names a plan/region/currency (or,
     // for the transition release, an exact configured USD priceId) and the
     // Stripe Price is resolved from server config — see lib/billing/checkout-request.ts.
-    const parsed = parseCheckoutRequest(body)
+    // The workspace ID (for the Production certification allow-list) is the
+    // session's active workspace, never anything the client sent.
+    const parsed = parseCheckoutRequest(body, process.env, membership.workspaceId)
     if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: parsed.status })
     const { price } = parsed
 

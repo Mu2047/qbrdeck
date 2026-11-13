@@ -305,7 +305,8 @@ describe('billing page and BillingButton use the server-resolved region (SOURCE-
   const button = readSourceLF('app/(app)/dashboard/billing/billing-button.tsx')
 
   it('the selector renders only when GM is actually enabled, for an Owner, without a live paid subscription', () => {
-    expect(page).toMatch(/const regions = selectableRegions\(\)/)
+    // Scoped to the ACTIVE workspace (Production certification allow-list).
+    expect(page).toMatch(/const regions = selectableRegions\(process\.env, workspaceId\)/)
     expect(page).toMatch(/const showRegionSelector = canManageBilling && regions\.length > 1 && !hasLivePaidSubscription\(guardSub\)/)
     expect(page).toMatch(/\{showRegionSelector && \(/)
     // Options come only from the server's selectable list.
@@ -317,7 +318,7 @@ describe('billing page and BillingButton use the server-resolved region (SOURCE-
   })
 
   it('without the selector the page is always GLOBAL, whatever ?region= says', () => {
-    expect(page).toMatch(/const region\s*=\s*showRegionSelector \? resolvePageRegion\(searchParams\?\.region\) : 'GLOBAL'/)
+    expect(page).toMatch(/const region\s*=\s*showRegionSelector \? resolvePageRegion\(searchParams\?\.region, process\.env, workspaceId\) : 'GLOBAL'/)
   })
 
   it('prices follow the display region; checkout availability follows the resolved region', () => {
