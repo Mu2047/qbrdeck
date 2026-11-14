@@ -62,4 +62,68 @@
   .badge-gray {
     @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600;
   }
+
+  /* ── QBR Deck UI refresh (qd-*) ──────────────────────────────────────────
+     Additive, opt-in presentation primitives. They do not alter any class
+     above, so pages that do not use a qd-* class render exactly as before. */
+
+  /* Surfaces */
+  .qd-surface {
+    @apply bg-white rounded-lg border border-gray-200 shadow-qd-xs;
+  }
+
+  /* Page header */
+  .qd-page-header {
+    @apply flex items-end justify-between gap-6 pb-6 mb-8 border-b border-gray-200;
+  }
+  .qd-page-title {
+    @apply text-xl font-semibold tracking-tight text-navy-800 leading-7;
+  }
+  .qd-page-subtitle {
+    @apply mt-1 text-sm text-gray-500;
+  }
+
+  /* Section + metric typography (for upcoming checkpoints) */
+  .qd-section-title {
+    @apply text-sm font-semibold text-navy-800;
+  }
+  .qd-text-secondary {
+    @apply text-sm text-gray-500;
+  }
+  .qd-metric-label {
+    @apply text-xs font-medium text-gray-500;
+  }
+  .qd-metric-value {
+    @apply text-2xl font-semibold tracking-tight text-navy-800 tabular-nums;
+  }
+
+  /* Status badges (for upcoming checkpoints) */
+  .qd-status-badge {
+    @apply inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset;
+  }
+  .qd-status-red    { @apply bg-red-50 text-red-700 ring-red-600/15; }
+  .qd-status-orange { @apply bg-orange-50 text-orange-700 ring-orange-600/15; }
+  .qd-status-amber  { @apply bg-amber-50 text-amber-700 ring-amber-600/20; }
+  .qd-status-green  { @apply bg-green-50 text-green-700 ring-green-600/15; }
+  .qd-status-gray   { @apply bg-gray-50 text-gray-600 ring-gray-500/15; }
+
+  .qd-status-dot {
+    @apply h-1.5 w-1.5 rounded-full bg-current;
+  }
+
+  /* Compact in-row action (e.g. per-row "Start QBR") */
+  .qd-btn-row {
+    @apply inline-flex items-center justify-center rounded-md border border-gray-200 bg-white px-2.5 py-1 text-xs font-medium text-navy-800 shadow-qd-xs transition-colors hover:border-gray-300 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy-500 focus-visible:ring-offset-1;
+  }
+
+  /* Sidebar navigation */
+  .qd-nav-item {
+    @apply relative flex items-center gap-3 h-9 px-3 rounded-md text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400/70;
+  }
+  .qd-nav-item-active {
+    @apply bg-white/[0.08] text-white before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[3px] before:rounded-r-full before:bg-gold-500;
+  }
+  .qd-nav-item-idle {
+    @apply text-white/60 hover:text-white hover:bg-white/[0.05];
+  }
 }

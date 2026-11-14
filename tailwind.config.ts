@@ -37,6 +37,13 @@ const config: Config = {
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
       },
+      // QBR Deck UI refresh — additive presentation tokens only. Nothing
+      // existing references these; they back the scoped .qd-* classes in
+      // app/globals.css.
+      boxShadow: {
+        'qd-xs': '0 1px 2px 0 rgb(16 24 40 / 0.04)',
+        'qd-sm': '0 1px 3px 0 rgb(16 24 40 / 0.06), 0 1px 2px -1px rgb(16 24 40 / 0.04)',
+      },
     },
   },
   plugins: [],

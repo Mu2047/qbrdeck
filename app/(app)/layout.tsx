@@ -117,16 +117,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     // instead of keeping them pinned in view.
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
-      <aside className="w-60 h-screen flex-shrink-0 bg-navy-800 flex flex-col">
+      <aside className="w-60 h-screen flex-shrink-0 bg-navy-800 border-r border-navy-900 flex flex-col">
         {/* Logo */}
-        <div className="h-16 shrink-0 flex items-center px-5 border-b border-white/10">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 bg-gold-500 rounded-md flex items-center justify-center">
-              <FileText size={14} className="text-white" />
+        <div className="h-16 shrink-0 flex items-center px-5 border-b border-white/[0.08]">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 bg-gold-500 rounded-lg flex items-center justify-center shadow-sm ring-1 ring-inset ring-white/10">
+              <FileText size={15} className="text-white" aria-hidden="true" />
             </div>
             <div>
-              <div className="text-white text-sm font-semibold leading-none">QBR Deck</div>
-              <div className="text-white/40 text-[10px] mt-0.5">MI Secure Tech</div>
+              <div className="text-white text-[15px] font-semibold tracking-tight leading-none">QBR Deck</div>
+              <div className="text-white/55 text-[11px] font-medium mt-1 leading-none">MI Secure Tech</div>
             </div>
           </div>
         </div>
@@ -136,20 +136,27 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             which on its own would silently block overflow-y-auto from ever
             engaging. With it, nav scrolls internally on a short viewport
             instead of pushing the switcher/Account footer below it. */}
-        <nav className="flex-1 min-h-0 overflow-y-auto px-3 py-4 space-y-1">
+        <nav className="flex-1 min-h-0 overflow-y-auto px-3 py-5 space-y-0.5">
           {NAV.map(({ href, icon: Icon, label }) => {
             const active = path === href || (href !== '/dashboard' && path.startsWith(href))
             return (
               <Link
                 key={href}
                 href={href}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
+                aria-current={active ? 'page' : undefined}
+                className={`group qd-nav-item ${
                   active
-                    ? 'bg-white/15 text-white font-medium'
-                    : 'text-white/60 hover:text-white hover:bg-white/10'
+                    ? 'qd-nav-item-active'
+                    : 'qd-nav-item-idle'
                 }`}
               >
-                <Icon size={16} />
+                <Icon
+                  size={16}
+                  aria-hidden="true"
+                  className={`shrink-0 transition-colors ${
+                    active ? 'text-gold-400' : 'text-white/45 group-hover:text-white/80'
+                  }`}
+                />
                 {label}
               </Link>
             )
@@ -160,11 +167,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             confirmed, so a single-workspace user sees no selector at all,
             and no empty gap either (the conditional renders nothing). */}
         {workspaces.length > 1 && (
-          <div className="px-4 pt-3 shrink-0">
+          <div className="px-3 pt-3 pb-3 shrink-0">
             <label htmlFor="workspace-switcher" className="sr-only">Switch workspace</label>
             <select
               id="workspace-switcher"
-              className="w-full bg-white/10 text-white text-xs rounded-lg px-2 py-2 border border-white/10 disabled:opacity-60"
+              className="w-full bg-white/[0.06] text-white text-xs font-medium rounded-md px-2.5 py-2 border border-white/10 hover:border-white/20 transition-colors focus:outline-none focus:ring-2 focus:ring-gold-500/50 disabled:opacity-60"
               value={activeWorkspaceId}
               disabled={switching}
               onChange={e => switchWorkspace(e.target.value)}
@@ -182,9 +189,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         )}
 
         {/* User */}
-        <div className="p-4 shrink-0 border-t border-white/10 flex items-center gap-3">
+        <div className="px-4 py-3.5 shrink-0 border-t border-white/[0.08] flex items-center gap-3">
           <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: 'w-8 h-8' } }} />
-          <div className="text-white/60 text-xs">Account</div>
+          <div className="text-white/70 text-xs font-medium">Account</div>
         </div>
       </aside>
 
