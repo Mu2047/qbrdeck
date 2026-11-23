@@ -5,6 +5,8 @@ import { formatPrice } from '@/lib/billing/format-price'
 import { PAID_PLANS, formatRegionalPrice } from '@/lib/billing/regional-prices'
 import { selectableRegions, resolvePageRegion, displayRegionForStoredPrice, regionSelectorLabel } from '@/lib/billing/checkout-region'
 import { hasLivePaidSubscription } from '@/lib/billing/checkout-request'
+import { currencyForStripePrice } from '@/lib/billing/portal-config'
+import type { BillingCurrency } from '@/lib/billing/currencies'
 import { REGIONS } from '@/lib/billing/regions'
 import { prisma } from '@/lib/prisma'
 import { getWorkspaceContext } from '@/lib/workspace'
@@ -77,6 +79,15 @@ export default async function BillingPage({
     ? await prisma.subscription.findUnique({ where: { workspaceId }, select: { stripePriceId: true } })
     : null
   const displayRegion = hasPaidSub ? displayRegionForStoredPrice(storedPrice?.stripePriceId) : region
+
+  // Only an Owner of a workspace WITHOUT a live paid subscription may start a
+  // checkout. A paid workspace changes plan through Manage Subscription (the
+  // checkout route would refuse it 409 SUBSCRIPTION_EXISTS anyway).
+  const canStartCheckout = canManageBilling && !hasPaidSub
+
+  // Informational only. Uses the same fail-closed lookup as the portal route:
+  // a missing/unknown Price never becomes a guessed "USD" here.
+  const billedCurrency = hasPaidSub ? subscriptionCurrency(storedPrice?.stripePriceId) : null
 
   return (
     <div className="p-8 max-w-5xl">
@@ -197,7 +208,7 @@ export default async function BillingPage({
                   </li>
                 ))}
               </ul>
-              {canManageBilling ? (
+              {canStartCheckout ? (
                 <BillingButton planKey={planKey} isCurrent={isCurrent} checkoutAvailable={checkoutAvailable} region={region} />
               ) : isCurrent ? (
                 <button disabled className="btn-secondary w-full justify-center opacity-50 cursor-not-allowed">
@@ -221,6 +232,13 @@ export default async function BillingPage({
           <div>
             <p className="text-sm font-medium text-navy-800">Manage subscription</p>
             <p className="text-xs text-gray-400 mt-0.5">Cancel, update payment method, or view invoices</p>
+            {hasPaidSub && (
+              <p className="text-xs text-gray-500 mt-1">
+                {billedCurrency
+                  ? `Your subscription is billed in ${billedCurrency}. Manage plan changes through Manage Subscription.`
+                  : 'Manage plan changes through Manage Subscription.'}
+              </p>
+            )}
           </div>
           <BillingButton planKey="MANAGE" isCurrent={false} />
         </div>
@@ -234,6 +252,18 @@ export default async function BillingPage({
       </p>
     </div>
   )
+}
+
+// ── Subscription currency (display) ───────────────────────────────────────────
+// currencyForStripePrice fails closed on a missing/unknown Price or bad config;
+// the page then names no currency rather than guessing one.
+
+function subscriptionCurrency(priceId: string | null | undefined): BillingCurrency | null {
+  try {
+    return currencyForStripePrice(priceId)
+  } catch {
+    return null
+  }
 }
 
 // ── Usage row component ───────────────────────────────────────────────────────

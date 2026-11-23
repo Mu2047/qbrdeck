@@ -1,7 +1,8 @@
 import Link from 'next/link'
 import { SignedIn, SignedOut, SignInButton } from '@clerk/nextjs'
-import { FileText, Zap, Download, Shield, Users, BarChart3, Check, ArrowRight, Star } from 'lucide-react'
-import { formatRegionalPrice, type PaidPlan } from '@/lib/billing/regional-prices'
+import { FileText, Zap, Download, Shield, Users, BarChart3, ArrowRight, Star } from 'lucide-react'
+import { getAvailableRegions } from '@/lib/billing/regional-prices'
+import { PricingRegionToggle, type MarketingPlan } from './pricing-region-toggle'
 
 const FEATURES = [
   { icon: Zap, title: 'AI-generated in seconds', desc: 'Paste your metrics. Claude AI writes executive-grade slides your clients will respect.' },
@@ -12,9 +13,9 @@ const FEATURES = [
   { icon: FileText, title: 'History & version control', desc: 'Every QBR saved. Pull up last quarter in one click during renewal conversations.' },
 ]
 
-// Amounts come from the canonical pricing config (USD / GLOBAL) so this page
-// and the billing page cannot drift.
-const PLANS: { key: PaidPlan; name: string; desc: string; features: string[]; cta: string; popular: boolean }[] = [
+// Amounts come from the canonical pricing config (formatRegionalPrice, inside
+// PricingRegionToggle) so this page and the billing page cannot drift.
+const PLANS: MarketingPlan[] = [
   {
     key: 'SOLO',
     name: 'Solo',
@@ -180,36 +181,9 @@ export default function LandingPage() {
               by law. See our <Link href="/terms" className="underline hover:text-gray-600">Terms</Link>.
             </p>
           </div>
-          <div className="grid md:grid-cols-3 gap-6">
-            {PLANS.map((plan) => (
-              <div key={plan.name} className={`card p-7 flex flex-col ${plan.popular ? 'ring-2 ring-navy-800 relative' : ''}`}>
-                {plan.popular && (
-                  <div className="absolute -top-3.5 left-1/2 -translate-x-1/2">
-                    <span className="bg-navy-800 text-gold-300 text-xs font-medium px-3 py-1 rounded-full">Most popular</span>
-                  </div>
-                )}
-                <div className="mb-5">
-                  <h3 className="font-bold text-navy-800 text-lg">{plan.name}</h3>
-                  <p className="text-gray-500 text-xs mt-1">{plan.desc}</p>
-                </div>
-                <div className="mb-6">
-                  <span className="text-4xl font-bold text-navy-800">{formatRegionalPrice(plan.key, 'GLOBAL')}</span>
-                  <span className="text-gray-400 text-sm">/month</span>
-                </div>
-                <ul className="space-y-2.5 mb-8 flex-1">
-                  {plan.features.map((f) => (
-                    <li key={f} className="flex items-center gap-2.5 text-sm text-gray-600">
-                      <Check size={15} className="text-green-500 flex-shrink-0" />
-                      {f}
-                    </li>
-                  ))}
-                </ul>
-                <Link href="/sign-up" className={plan.popular ? 'btn-primary w-full justify-center' : 'btn-secondary w-full justify-center'}>
-                  {plan.cta}
-                </Link>
-              </div>
-            ))}
-          </div>
+          {/* Regions come from server config only; with no workspace context
+              a region under Production certification is never offered. */}
+          <PricingRegionToggle plans={PLANS} regions={getAvailableRegions(process.env, null)} />
         </div>
       </section>
 

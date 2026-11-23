@@ -491,13 +491,25 @@ describe('stripePriceId is not read by entitlement, guard or billing-UI code (SO
       '  const displayRegion = hasPaidSub ? displayRegionForStoredPrice(storedPrice?.stripePriceId) : region\n'
     expect(page).toContain(displayBlock)
     expect(page.indexOf('const hasPaidSub')).toBeLessThan(page.indexOf(displayBlock))
-    expect(page.split('stripePriceId').length - 1).toBe(2)
-    expect(page.replace(displayBlock, '')).not.toContain('stripePriceId')
-    expect(page.replace(displayBlock, '')).not.toContain('storedPrice')
+
+    // The second, equally display-only use: the "billed in {currency}" line,
+    // through the fail-closed portal helper, also gated on hasPaidSub.
+    const currencyLine =
+      '  const billedCurrency = hasPaidSub ? subscriptionCurrency(storedPrice?.stripePriceId) : null\n'
+    expect(page).toContain(currencyLine)
+    const rest = page.replace(displayBlock, '').replace(currencyLine, '')
+
+    expect(page.split('stripePriceId').length - 1).toBe(3)
+    expect(rest).not.toContain('stripePriceId')
+    expect(rest).not.toContain('storedPrice')
 
     // The derived region feeds the price text only — never checkout, the
     // selector, BillingButton or the Manage control.
-    expect(page.replace(displayBlock, '').match(/\bdisplayRegion\b/g)).toEqual(['displayRegion'])
+    expect(rest.match(/\bdisplayRegion\b/g)).toEqual(['displayRegion'])
+    // The billed currency feeds the informational text only.
+    expect(rest.match(/\bbilledCurrency\b/g)).toEqual(['billedCurrency', 'billedCurrency'])
+    expect(rest).toContain('{billedCurrency\n')
+    expect(rest).toContain('`Your subscription is billed in ${billedCurrency}. Manage plan changes through Manage Subscription.`')
     expect(page).toContain('{formatRegionalPrice(planKey, displayRegion)}')
     expect(page).toMatch(/const checkoutAvailable = regions\.includes\(region\)\n/)
     expect(page).toContain('<BillingButton planKey={planKey} isCurrent={isCurrent} checkoutAvailable={checkoutAvailable} region={region} />')

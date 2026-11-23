@@ -93,11 +93,15 @@ describe('billing page — no Custom AI tone promise', () => {
 })
 
 describe('marketing page — prices come from the canonical pricing config', () => {
-  it('renders each price through formatRegionalPrice (USD/GLOBAL), not a local amount', () => {
-    expect(marketingSource).toContain("import { formatRegionalPrice, type PaidPlan } from '@/lib/billing/regional-prices'")
-    expect(marketingSource).toContain("{formatRegionalPrice(plan.key, 'GLOBAL')}")
-    expect(marketingSource).not.toMatch(/price:\s*\d+/)
-    expect(marketingSource).not.toContain('${plan.price}')
+  it('renders each price through formatRegionalPrice (in PricingRegionToggle), not a local amount', () => {
+    const toggleSource = readSourceLF('app/(marketing)/pricing-region-toggle.tsx')
+    expect(marketingSource).toContain("import { PricingRegionToggle, type MarketingPlan } from './pricing-region-toggle'")
+    expect(toggleSource).toContain("import { formatRegionalPrice, type PaidPlan } from '@/lib/billing/regional-prices'")
+    expect(toggleSource).toContain('{formatRegionalPrice(plan.key, shown)}')
+    for (const src of [marketingSource, toggleSource]) {
+      expect(src).not.toMatch(/price:\s*\d+/)
+      expect(src).not.toContain('${plan.price}')
+    }
   })
 
   it('each plan card is keyed to its canonical paid plan', () => {
