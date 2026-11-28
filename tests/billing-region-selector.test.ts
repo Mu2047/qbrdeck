@@ -11,6 +11,7 @@ import {
   PAID_PLANS,
 } from '@/lib/billing/regional-prices'
 import { selectableRegions, resolvePageRegion, checkoutRequestBody, displayRegionForStoredPrice } from '@/lib/billing/checkout-region'
+import { currencyForStripePrice } from '@/lib/billing/portal-config'
 
 // Preview-only GMD certification path.
 //  - EXECUTABLE: the gate, the page-region resolver and the checkout body,
@@ -300,6 +301,27 @@ describe('billing card display currency (EXECUTABLE)', () => {
   })
 })
 
+describe('paid workspace billed-currency line (EXECUTABLE)', () => {
+  // The helper the page wraps: recognized Prices name their currency, even
+  // with checkout off; anything else throws (the page then names no currency).
+  it.each([
+    ['price_usd_growth', 'USD'],
+    ['price_gmd_agency', 'GMD'],
+    ['price_xof_solo',   'XOF'],
+  ])('%s → %s (Production, no regional checkout flag)', (priceId, currency) => {
+    expect(currencyForStripePrice(priceId, PRODUCTION)).toBe(currency)
+  })
+
+  it.each([
+    ['unknown Price ID', 'price_bogus',      PRODUCTION],
+    ['null Price ID',    null,               PRODUCTION],
+    ['GMD env unset',    'price_gmd_agency', { ...USD_ENV, VERCEL_ENV: 'production' }],
+    ['duplicate config', 'price_gmd_growth', { ...PRODUCTION, STRIPE_PRICE_GROWTH_GMD: 'price_usd_growth' }],
+  ])('%s → throws, never a silent USD', (_label, priceId, env) => {
+    expect(() => currencyForStripePrice(priceId, env)).toThrow()
+  })
+})
+
 describe('billing page and BillingButton use the server-resolved region (SOURCE-CONTRACT)', () => {
   const page   = readSourceLF('app/(app)/dashboard/billing/page.tsx')
   const button = readSourceLF('app/(app)/dashboard/billing/billing-button.tsx')
@@ -334,6 +356,29 @@ describe('billing page and BillingButton use the server-resolved region (SOURCE-
     expect(page).toMatch(/const displayRegion = hasPaidSub \? displayRegionForStoredPrice\(storedPrice\?\.stripePriceId\) : region/)
     // The paid display path never reads ?region= or the Preview flag.
     expect(page).not.toMatch(/displayRegionForStoredPrice\([^)]*searchParams/)
+  })
+
+  it('paid workspaces get no checkout BillingButton; free Owners keep the existing one', () => {
+    expect(page).toMatch(/const canStartCheckout = canManageBilling && !hasPaidSub\n/)
+    expect(page).toMatch(/\{canStartCheckout \? \(\s*<BillingButton planKey=\{planKey\} isCurrent=\{isCurrent\} checkoutAvailable=\{checkoutAvailable\} region=\{region\} \/>\s*\) : isCurrent \? \(\s*<button disabled[^>]*>\s*Current plan\s*<\/button>\s*\) : null\}/)
+    // The free-Owner selector is untouched.
+    expect(page).toMatch(/const showRegionSelector = canManageBilling && regions\.length > 1 && !hasLivePaidSubscription\(guardSub\)/)
+  })
+
+  it('a paid workspace shows its billed currency via the fail-closed portal helper, never a guessed USD', () => {
+    expect(page).toContain("import { currencyForStripePrice } from '@/lib/billing/portal-config'")
+    expect(page).toMatch(/const billedCurrency = hasPaidSub \? subscriptionCurrency\(storedPrice\?\.stripePriceId\) : null/)
+    expect(page).toMatch(/return currencyForStripePrice\(priceId\)\n\s*\} catch \{\n\s*return null/)
+    expect(page).toContain('`Your subscription is billed in ${billedCurrency}. Manage plan changes through Manage Subscription.`')
+    // The informational currency never comes from the display fallback.
+    expect(page).not.toMatch(/billedCurrency[^\n]*displayRegion/)
+  })
+
+  it('the currency line sits inside the Owner-only Manage Subscription card, which is unchanged', () => {
+    const manage = page.slice(page.indexOf('{/* ── Manage subscription'), page.indexOf('<p className="text-gray-400 text-xs mt-4">'))
+    expect(manage).toMatch(/\{canManageBilling && sub\?\.stripeSubscriptionId && \(/)
+    expect(manage).toContain('{hasPaidSub && (')
+    expect(manage).toContain('<BillingButton planKey="MANAGE" isCurrent={false} />')
   })
 
   it('BillingButton sends checkoutRequestBody(planKey, region), never a hardcoded USD body', () => {

@@ -105,8 +105,9 @@ describe('Manage Subscription (SOURCE-CONTRACT)', () => {
 })
 
 describe('plan-card upgrade controls (SOURCE-CONTRACT)', () => {
-  it('the Upgrade/checkout BillingButton is rendered only when canManageBilling', () => {
-    expect(planCards).toMatch(/\{canManageBilling \? \(\s*<BillingButton planKey=\{planKey\} isCurrent=\{isCurrent\} checkoutAvailable=\{checkoutAvailable\} region=\{region\} \/>/)
+  it('the Upgrade/checkout BillingButton is rendered only for an Owner without a live paid subscription', () => {
+    expect(billingSource).toMatch(/const canStartCheckout = canManageBilling && !hasPaidSub\n/)
+    expect(planCards).toMatch(/\{canStartCheckout \? \(\s*<BillingButton planKey=\{planKey\} isCurrent=\{isCurrent\} checkoutAvailable=\{checkoutAvailable\} region=\{region\} \/>/)
     // The only BillingButton in the plan cards is the gated one.
     expect(planCards.match(/<BillingButton\b/g)).toHaveLength(1)
   })
